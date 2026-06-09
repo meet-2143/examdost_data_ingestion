@@ -1,0 +1,74 @@
+[
+  {
+    "column_name": "id"
+  },
+  {
+    "column_name": "source_doc"
+  },
+  {
+    "column_name": "q_no"
+  },
+  {
+    "column_name": "page"
+  },
+  {
+    "column_name": "question_text"
+  },
+  {
+    "column_name": "options"
+  },
+  {
+    "column_name": "answer_letter"
+  },
+  {
+    "column_name": "answer_text"
+  },
+  {
+    "column_name": "explanation_md"
+  },
+  {
+    "column_name": "subject"
+  },
+  {
+    "column_name": "chapter"
+  },
+  {
+    "column_name": "topic"
+  },
+  {
+    "column_name": "keywords"
+  },
+  {
+    "column_name": "has_figure"
+  },
+  {
+    "column_name":"simhash_binary"
+  },
+  {
+    "column_name": "figures"
+  },
+  {
+    "column_name": "phash_binary"
+  },
+  {
+    "column_name": "question_embedding"
+  },
+  {
+    "column_name": "ingested_at"
+  },
+  {
+    "column_name": "updated_at"
+  },
+  {
+    "column_name": "solution_md"
+  },
+  {
+    "column_name": "confidence_score"
+  },
+  {
+    "column_name": "confidence_reason"
+  },
+  {
+    "column_name": "created_at"
+  }
+]

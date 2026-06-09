@@ -1,0 +1,2360 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -2576,
+        800
+      ],
+      "id": "9d055914-b93b-4d23-81ab-ddf6665026a4",
+      "name": "When Executed by Another Workflow",
+      "notes": "Receives full Phase 2 payload: chatId, messageId, threadMessageId, questionText, photoDownloadUrl, solutionMd, confidence, subject, chapter, topic, keywords, difficulty, sourceTag"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-low-conf",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 85,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        224
+      ],
+      "id": "1e651924-9534-409e-a0b9-934d5f27860c",
+      "name": "IF: Confidence Below Threshold",
+      "notes": "True (output 0) → Escalate to admin WhatsApp\nFalse (output 1) → High confidence, skip escalation"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Build Escalation Payload (FR-9) ─────────────────────────────────────────\n// Constructs the full WhatsApp escalation message for the admin.\n// Assigns a short escalation_id used for all subsequent admin replies.\n// ─────────────────────────────────────────────────────────────────────────────\n\nconst upstream = $input.first().json;\n\n// ── 1. Generate escalation ID ─────────────────────────────────────────────────\nconst escalation_id = 'ESC-' + Date.now().toString(36).toUpperCase().slice(-6);\n\n// ── 2. Determine escalation reason ────────────────────────────────────────────\nlet escalation_reason = 'low_confidence';\nif (!upstream.solutionMd || upstream.solutionMd.trim().length < 50) {\n  escalation_reason = 'empty_or_short_solution';\n} else if (upstream.subject === 'Unknown' || upstream.topic === 'Unknown') {\n  escalation_reason = 'unclassified_topic';\n} else if ((upstream.confidence ?? 1) < 0.75) {\n  escalation_reason = 'low_confidence';\n}\n\n// ── 3. Build Telegram thread deep-link ────────────────────────────────────────\n// Group chats have negative IDs like -100XXXXXXXXX; strip the -100 prefix\nconst rawChatId = String(upstream.chatId || '');\nconst cleanChatId = rawChatId.startsWith('-100') ? rawChatId.slice(4) : rawChatId.replace('-', '');\nconst threadLink = `https://t.me/c/${cleanChatId}/${upstream.threadMessageId}`;\n\n// ── 4. Truncate AI draft for WhatsApp (4096 char limit) ───────────────────────\nconst draft = upstream.solutionMd || '';\nconst draftPreview = draft;\n\n// Strip HTML tags for WhatsApp readability\nconst draftClean = draftPreview\n  .replace(/<b>/gi, '*').replace(/<\\/b>/gi, '*')\n  .replace(/<i>/gi, '_').replace(/<\\/i>/gi, '_')\n  .replace(/<code>/gi, '`').replace(/<\\/code>/gi, '`')\n  .replace(/<pre>/gi, '```\\n').replace(/<\\/pre>/gi, '\\n```')\n  .replace(/<[^>]+>/g, '');\n\n// ── 5. Build multi-line WhatsApp message ──────────────────────────────────────\nconst waMessageText = [\n  `🚨 <b>ESCALATION [${escalation_id}]</b>`,\n  ``,\n  `👤 <b>Student:</b> ${upstream.fromUsername || 'Unknown'}`,\n  `📚 <b>Subject:</b> ${upstream.subject || 'Unknown'} → ${upstream.chapter || 'Unknown'}`,\n  `🔖 <b>Topic:</b> ${upstream.topic || 'Unknown'}`,\n  `📊 <b>Difficulty:</b> ${upstream.difficulty || 'medium'}`,\n  `🎯 <b>AI Confidence:</b> ${upstream.confidence ?? 0}%`,\n  `⚠️ <b>Reason:</b> ${escalation_reason}`,\n  ``,\n  `❓ <b>Question:</b>`,\n  upstream.questionText?.trim() || '<i>(image only — no caption text)</i>',\n  ``,\n  `🤖 <b>AI Draft (preview):</b>`,\n  draftClean,\n  ``,\n  `🔗 <b>Telegram Thread:</b> ${threadLink}`,\n  ``,\n  `──────────────────────────`,\n  `Reply options:`,\n  `• Type your solution (include <code>[${escalation_id}]</code>)`,\n  `• Send a voice note with <code>[${escalation_id}]</code> in caption`,\n  `• <b>PENDING</b> — see all open escalations`,\n  `• <b>UPDATE ${escalation_id}</b> — save final to knowledge base`,\n].join('\\n');\n\nreturn [{\n  json: {\n    ...upstream,\n    escalation_id,\n    escalation_reason,\n    draftPreview,\n    draftClean,\n    threadLink,\n    waMessageText,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1008,
+        32
+      ],
+      "id": "3bd24562-e8f8-44e1-89fe-a5b2aa68e9f0",
+      "name": "Code: Build Escalation Payload",
+      "notes": "FR-9: Assembles the WhatsApp escalation payload.\nOutputs: escalation_id, escalation_reason, waMessageText, draftClean, threadLink."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/escalations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.escalationBodyJson }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -560,
+        32
+      ],
+      "id": "3d303d6e-0e77-4e8d-bbe9-9b09f1a8bf48",
+      "name": "HTTP: Supabase INSERT Escalation",
+      "alwaysOutputData": true,
+      "notes": "FR-10: Inserts escalation row with status=pending.\nUse Prefer: return=representation to get the inserted row back."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "text": "=={{ $json.chunk }}",
+        "replyMarkup": "inlineKeyboard",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "id": "80e491ec-fb6d-4585-9a10-0f31500b95f9",
+      "name": "Telegram: Send Solution",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -784,
+        224
+      ],
+      "webhookId": "96ff469d-042a-40c3-96ff-2cc41717d542",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends the freshly generated HTML solution to the Telegram group thread. Replies in the correct thread via threadMessageId."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://fuamnucdmfirddocfaig.supabase.co/rest/v1/question_cache?on_conflict=phash_col",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.supabaseBodyJson }}",
+        "options": {}
+      },
+      "id": "b7560b6c-ccc2-477d-95d0-baf4080ae2a4",
+      "name": "HTTP: Supabase Cache Insert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -560,
+        416
+      ],
+      "alwaysOutputData": true,
+      "notes": "Upserts the new solution into question_cache so future identical (or near-identical) images are served from cache. `Prefer: resolution=merge-duplicates` prevents duplicate rows on re-runs."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawText = $json.solutionMd || '';\n\n// ── 1. Fix literal \\n strings → actual newlines ───────────────────────────────\nlet safeText = rawText.replace(/\\\\n/g, '\\n');\n\n// ── 2. Escape < and > INSIDE <code> and <pre> blocks ONLY ────────────────────\n// Math operators like D[k] < D[k+1] must be &lt; / &gt; inside code tags\nsafeText = safeText.replace(/<(code|pre)>([\\s\\S]*?)<\\/\\1>/g, (match, tag, inner) => {\n  const safeInner = inner\n    .replace(/&(?!(lt|gt|amp|quot|apos);)/g, '&amp;') // escape bare & first\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n  return `<${tag}>${safeInner}</${tag}>`;\n});\n\n// ── 3. Convert unsupported tags → Telegram equivalents ───────────────────────\nsafeText = safeText\n  .replace(/<br\\s*\\/?>/gi, '\\n')\n  .replace(/<strong>([\\s\\S]*?)<\\/strong>/gi, '<b>$1</b>')\n  .replace(/<em>([\\s\\S]*?)<\\/em>/gi, '<i>$1</i>')\n  .replace(/<h[1-6][^>]*>([\\s\\S]*?)<\\/h[1-6]>/gi, '<b>$1</b>\\n');\n\n// ── 4. Strip all remaining unsupported tags (keep inner text) ─────────────────\nsafeText = safeText\n  .replace(/<sub>([^<]*)<\\/sub>/gi, '[$1]')   // E<sub>B</sub> → E[B]\n.replace(/<sup>([^<]*)<\\/sup>/gi, '^$1')    // x<sup>2</sup> → x^2\n.replace(/<\\/?(?:span|div|p|ul|ol|li|table|tr|td|th|hr|section|article|figure|img|svg)[^>]*>/gi, '')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\n// ── 5. Smart chunking — never cut in the middle of an HTML tag ────────────────\nconst chunkSize = 3800; // safe buffer below Telegram's 4096 limit\nconst chunks = [];\nlet i = 0;\n\nwhile (i < safeText.length) {\n  if (i + chunkSize >= safeText.length) {\n    chunks.push({ json: { ...$json, chunk: safeText.slice(i) } });\n    break;\n  }\n\n  // Walk back from cut point to find a newline or space\n  let end = i + chunkSize;\n  while (end > i && safeText[end] !== '\\n' && safeText[end] !== ' ') {\n    end--;\n  }\n  if (end === i) end = i + chunkSize; // fallback: hard cut\n\n  chunks.push({ json: { ...$json, chunk: safeText.slice(i, end) } });\n  i = end;\n}\n\nreturn chunks;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1008,
+        320
+      ],
+      "id": "593fdb1d-1524-4985-acb7-f28abb748ad7",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\n// Build the object — let JSON.stringify handle ALL escaping\nconst body = {\n  phash_col:  $('When Executed by Another Workflow').first().json.pHashBinary || '',\n  solution_md: data.solutionMd  || '',\n  confidence:  data.confidence  ?? 0,\n  source_tag:  'gemini-2.5-flash',\n  subject:     data.subject     || 'Unknown',\n  chapter:     data.chapter     || 'Unknown',\n  topic:       data.topic       || 'Unknown',\n  keywords:    Array.isArray(data.keywords) ? data.keywords : []\n};\n\nreturn [{\n  json: {\n    ...data,\n    supabaseBodyJson: JSON.stringify(body)  // ✅ fully escaped, valid JSON string\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        416
+      ],
+      "id": "6108b3e0-bc73-4b97-9ba5-a15a79bdb7f5",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "chatId": "=-1003990692345",
+        "text": "={{ $('Code: Build Escalation Payload').item.json.waMessageText }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -336,
+        32
+      ],
+      "id": "30485797-164d-475e-a38b-dbb563f9c7a5",
+      "name": "Telegram: Send Escalation Text to Admin",
+      "webhookId": "12969e60-2ec0-46f5-8e0a-930825bc7bfd",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "notes": "FR-9: Sends the escalation text message to admin via Telegram.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "=-1003990692345",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        336,
+        -64
+      ],
+      "id": "09c9f90b-344b-40a1-a15a-f0016db838f6",
+      "name": "Telegram: Send Question Image to Admin",
+      "webhookId": "09b3c2ff-b50c-4d45-b697-e38434982b8c",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "FR-9: Sends student's question image to admin via Telegram.\ncontinueOnFail=true: text-only questions have no photoDownloadUrl; safely skipped.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "text": "=⏳ <b>Your question has been forwarded to our expert tutor for a detailed review.</b>\n\nYou'll receive a solution shortly. Thank you for your patience!",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        -64
+      ],
+      "id": "25c0b48b-1e62-4d46-9a13-2f326815f52d",
+      "name": "Telegram: ACK Student1",
+      "webhookId": "e221cae8-9bae-46d6-a49c-a6cb9aa52647",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends holding message to student so they know it has been escalated.\nReplies in the correct thread via messageId."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot8751060343:AAHV38osqjWVw9BE23g4C6st0E1FjRiruDU/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $json.photoFileId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "436f2556-a923-4a5d-9dc4-7fd3482d9ade",
+      "name": "HTTP: Get Telegram File Path2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1904,
+        224
+      ],
+      "notes": "Resolves the photoFileId to a CDN file_path using the Telegram Bot API."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot8751060343:AAHV38osqjWVw9BE23g4C6st0E1FjRiruDU/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "5b322f2c-0675-4976-8e30-35a31ae9afe3",
+      "name": "HTTP: Download Image Binary2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1680,
+        224
+      ],
+      "notes": "Downloads the actual image bytes from Telegram's CDN as binary. Stored as $binary.data."
+    },
+    {
+      "parameters": {
+        "jsCode": "const triggerData  = $('When Executed by Another Workflow').first().json;\nconst filePathData = $('HTTP: Get Telegram File Path2').first().json;\nconst binaryData   = $('HTTP: Download Image Binary2').first().json;\nconst test_score=80;\nconst combined = {\n  // ── Identity ──\n  chatId:             triggerData.chatId,\n  messageId:          triggerData.messageId,\n  threadMessageId:    triggerData.threadMessageId,\n  fromUserId:         triggerData.fromUserId,\n  fromUsername:       triggerData.fromUsername,\n  timestamp:          triggerData.timestamp,\n\n  // ── Photo ──\n  photoFileId:        triggerData.photoFileId,\n  photoDownloadUrl:   triggerData.photoDownloadUrl,\n  messageType:        triggerData.messageType,\n\n  // ── Classification ──\n  subject:            triggerData.subject,\n  chapter:            triggerData.chapter,\n  topic:              triggerData.topic,\n  keywords:           triggerData.keywords,\n  numerics:           triggerData.numerics,\n  difficulty:         triggerData.difficulty,\n\n  // ── Solution ──\n  summary:            triggerData.summary,\n  solutionMd:         triggerData.solutionMd,\n  solutionMdEscaped:  triggerData.solutionMdEscaped,\n  solutionPlain:      triggerData.solutionPlain,\n  final_answer:       triggerData.final_answer,\n\n  // ── AI meta ──\n  confidence:         triggerData.confidence,\n   // confidence:         test_score,\n  confidence_reason:  triggerData.confidence_reason,\n  finish_reason:      triggerData.finish_reason,\n  questionText:       triggerData.questionText,\n\n  // ── File path (HTTP: Get Telegram File Path2) ──\n  filePath:           filePathData?.result?.file_path ?? null,\n  fileId:             filePathData?.result?.file_id   ?? null,\n  fileSize:           filePathData?.result?.file_size ?? null,\n\n  // ── Perceptual hash / cache (HTTP: Download Image Binary2) ──\n  pHash:              binaryData.pHash,\n  pHashBinary:        binaryData.pHashBinary,\n  ocrText:            binaryData.ocrText,\n  cacheHit:           binaryData.cacheHit,\n  cacheRowId:         binaryData.cacheRowId,\n  hammingDistance:    binaryData.hammingDistance,\n};\n\nreturn [{ json: combined }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        224
+      ],
+      "id": "583c0e93-a622-49d7-9ac7-1eaaa149a3a8",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst body = {\n  escalation_id: data.escalation_id,\n  chat_id:       data.chatId,\n  message_id:    data.messageId,\n  thread_id:     data.threadMessageId,\n  from_user_id:  data.fromUserId  ?? 0,\n  from_username: data.fromUsername ?? 'Unknown',\n  question_text: data.questionText ?? '',\n  photo_url:     data.photoDownloadUrl ?? null,\n  draft_md:      data.solutionMd  ?? '',\n  confidence:    data.confidence  ?? 0,\n  reason:        data.escalation_reason,\n  subject:       data.subject     ?? 'Unknown',\n  chapter:       data.chapter     ?? 'Unknown',\n  topic:         data.topic       ?? 'Unknown',\n  keywords:      Array.isArray(data.keywords) ? data.keywords : [],\n  thread_link:   data.threadLink,\n  phash_binary:   $('When Executed by Another Workflow').first().json.pHashBinary ?? null,\n  status:        'pending'\n};\n\nreturn [{\n  json: {\n    ...data,\n    escalationBodyJson: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        32
+      ],
+      "id": "778aad71-bec5-465f-bc3b-42be7c6f8f90",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1fc99ce9-3c9c-4b07-af7d-b70d492effb0",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.imageSource }}",
+              "rightValue": "document",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -112,
+        32
+      ],
+      "id": "ccf6c7c0-9929-4495-a266-db90a28efe28",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "=-1003990692345",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        336,
+        224
+      ],
+      "id": "07d279b2-a11d-4db8-b01c-b4091ff172ef",
+      "name": "Telegram: Send Question Image to Admin1",
+      "webhookId": "09b3c2ff-b50c-4d45-b697-e38434982b8c",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "FR-9: Sends student's question image to admin via Telegram.\ncontinueOnFail=true: text-only questions have no photoDownloadUrl; safely skipped.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "text": "=⏳ <b>Your question has been forwarded to our expert tutor for a detailed review.</b>\n\nYou'll receive a solution shortly. Thank you for your patience!",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        224
+      ],
+      "id": "58007231-8c32-4249-b105-1a924b8542c6",
+      "name": "Telegram: ACK Student2",
+      "webhookId": "e221cae8-9bae-46d6-a49c-a6cb9aa52647",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends holding message to student so they know it has been escalated.\nReplies in the correct thread via messageId."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull binary from the download node and attach to current item\nconst binaryItem = $('HTTP: Download Image Binary2').first();\nconst currentJson = $input.first().json;\n\nreturn [{\n  json: currentJson,\n  binary: binaryItem.binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        -64
+      ],
+      "id": "4835741b-203d-4090-b155-abb846c0ce2f",
+      "name": "Code in JavaScript4"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull binary from the download node and attach to current item\nconst binaryItem = $('HTTP: Download Image Binary2').first();\nconst currentJson = $input.first().json;\n\nreturn [{\n  json: currentJson,\n  binary: binaryItem.binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        112,
+        224
+      ],
+      "id": "eeff95c2-1b13-466b-8a73-4659152d58bb",
+      "name": "Code in JavaScript5"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.isimage }}",
+                    "rightValue": "image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "e97c0f4d-a10b-4300-a894-e8466868611a"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "image"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "63c4c31f-a51f-4fa2-8823-ded8cb271da5",
+                    "leftValue": "={{ $json.isimage }}",
+                    "rightValue": "mixed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "mixed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 3
+                },
+                "conditions": [
+                  {
+                    "id": "a25fb912-8f2d-448c-b7c1-8125697a2c36",
+                    "leftValue": "={{ $json.isimage }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.4,
+      "position": [
+        -2128,
+        784
+      ],
+      "id": "cafb31e9-7339-45ca-a917-8ba2d9bb81c5",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-low-conf",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 85,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1008,
+        800
+      ],
+      "id": "596d0e63-6d06-45de-b074-9cd09c10b029",
+      "name": "IF: Confidence Below Threshold1",
+      "notes": "True (output 0) → Escalate to admin WhatsApp\nFalse (output 1) → High confidence, skip escalation"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Build Escalation Payload (FR-9) ─────────────────────────────────────────\n// Constructs the full WhatsApp escalation message for the admin.\n// Assigns a short escalation_id used for all subsequent admin replies.\n// ─────────────────────────────────────────────────────────────────────────────\n\nconst upstream = $input.first().json;\n\n// ── 1. Generate escalation ID ─────────────────────────────────────────────────\nconst escalation_id = 'ESC-' + Date.now().toString(36).toUpperCase().slice(-6);\n\n// ── 2. Determine escalation reason ────────────────────────────────────────────\nlet escalation_reason = 'low_confidence';\nif (!upstream.solutionMd || upstream.solutionMd.trim().length < 50) {\n  escalation_reason = 'empty_or_short_solution';\n} else if (upstream.subject === 'Unknown' || upstream.topic === 'Unknown') {\n  escalation_reason = 'unclassified_topic';\n} else if ((upstream.confidence ?? 1) < 0.75) {\n  escalation_reason = 'low_confidence';\n}\n\n// ── 3. Build Telegram thread deep-link ────────────────────────────────────────\n// Group chats have negative IDs like -100XXXXXXXXX; strip the -100 prefix\nconst rawChatId = String(upstream.chatId || '');\nconst cleanChatId = rawChatId.startsWith('-100') ? rawChatId.slice(4) : rawChatId.replace('-', '');\nconst threadLink = `https://t.me/c/${cleanChatId}/${upstream.threadMessageId}`;\n\n// ── 4. Truncate AI draft for WhatsApp (4096 char limit) ───────────────────────\nconst draft = upstream.solutionMd || '';\nconst draftPreview = draft\n// Strip HTML tags for WhatsApp readability\nconst draftClean = draftPreview\n  .replace(/<b>/gi, '*').replace(/<\\/b>/gi, '*')\n  .replace(/<i>/gi, '_').replace(/<\\/i>/gi, '_')\n  .replace(/<code>/gi, '`').replace(/<\\/code>/gi, '`')\n  .replace(/<pre>/gi, '```\\n').replace(/<\\/pre>/gi, '\\n```')\n  .replace(/<[^>]+>/g, '');\n\n// ── 5. Build multi-line WhatsApp message ──────────────────────────────────────\nconst waMessageText = [\n  `🚨 <b>ESCALATION [${escalation_id}]</b>`,\n  ``,\n  `👤 <b>Student:</b> ${upstream.fromUsername || 'Unknown'}`,\n  `📚 <b>Subject:</b> ${upstream.subject || 'Unknown'} → ${upstream.chapter || 'Unknown'}`,\n  `🔖 <b>Topic:</b> ${upstream.topic || 'Unknown'}`,\n  `📊 <b>Difficulty:</b> ${upstream.difficulty || 'medium'}`,\n  `🎯 <b>AI Confidence:</b> ${upstream.confidence ?? 0}%`,\n  `⚠️ <b>Reason:</b> ${escalation_reason}`,\n  ``,\n  `❓ <b>Question:</b>`,\n  upstream.questionText?.trim() || '<i>(image only — no caption text)</i>',\n  ``,\n  `🤖 <b>AI Draft (preview):</b>`,\n  draftClean,\n  ``,\n  `🔗 <b>Telegram Thread:</b> ${threadLink}`,\n  ``,\n  `──────────────────────────`,\n  `Reply options:`,\n  `• Type your solution (include <code>[${escalation_id}]</code>)`,\n  `• Send a voice note with <code>[${escalation_id}]</code> in caption`,\n  `• <b>PENDING</b> — see all open escalations`,\n  `• <b>UPDATE ${escalation_id}</b> — save final to knowledge base`,\n].join('\\n');\n\nreturn [{\n  json: {\n    ...upstream,\n    escalation_id,\n    escalation_reason,\n    draftPreview,\n    draftClean,\n    threadLink,\n    waMessageText,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        608
+      ],
+      "id": "1c249fc7-2c41-4899-b3c5-6c3332fad9fd",
+      "name": "Code: Build Escalation Payload1",
+      "notes": "FR-9: Assembles the WhatsApp escalation payload.\nOutputs: escalation_id, escalation_reason, waMessageText, draftClean, threadLink."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/escalations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.escalationBodyJson }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -336,
+        608
+      ],
+      "id": "db714d33-9846-4092-8bfa-ba256ecc1688",
+      "name": "HTTP: Supabase INSERT Escalation1",
+      "alwaysOutputData": true,
+      "notes": "FR-10: Inserts escalation row with status=pending.\nUse Prefer: return=representation to get the inserted row back."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatid }}",
+        "text": "={{ $('Code in JavaScript6').item.json.chunk }}",
+        "replyMarkup": "inlineKeyboard",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "id": "dae82733-d687-4d94-bf11-611af5048c8a",
+      "name": "Telegram: Send Solution1",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -112,
+        992
+      ],
+      "webhookId": "96ff469d-042a-40c3-96ff-2cc41717d542",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends the freshly generated HTML solution to the Telegram group thread. Replies in the correct thread via threadMessageId."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://fuamnucdmfirddocfaig.supabase.co/rest/v1/question_cache?on_conflict=phash_col",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.supabaseBodyJson }}",
+        "options": {}
+      },
+      "id": "1b95a3ea-1200-4dff-9567-266756d96a08",
+      "name": "HTTP: Supabase Cache Insert1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -112,
+        800
+      ],
+      "alwaysOutputData": true,
+      "notes": "Upserts the new solution into question_cache so future identical (or near-identical) images are served from cache. `Prefer: resolution=merge-duplicates` prevents duplicate rows on re-runs."
+    },
+    {
+      "parameters": {
+        "jsCode": "const rawText1 = $input.first().json.data;\nfunction escapeHTML(text) {\n  return text\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n}\n\n// Apply before sending\nconst rawText = escapeHTML(rawText1);\n\n// ── 1. Fix literal \\n strings → actual newlines ───────────────────────────────\nlet safeText = rawText.replace(/\\\\n/g, '\\n');\n\n// ── 2. Escape < and > INSIDE <code> and <pre> blocks ONLY ────────────────────\n// Math operators like D[k] < D[k+1] must be &lt; / &gt; inside code tags\nsafeText = safeText.replace(/<(code|pre)>([\\s\\S]*?)<\\/\\1>/g, (match, tag, inner) => {\n  const safeInner = inner\n    .replace(/&(?!(lt|gt|amp|quot|apos);)/g, '&amp;') // escape bare & first\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n  return `<${tag}>${safeInner}</${tag}>`;\n});\n\n// ── 3. Convert unsupported tags → Telegram equivalents ───────────────────────\nsafeText = safeText\n  .replace(/<br\\s*\\/?>/gi, '\\n')\n  .replace(/<strong>([\\s\\S]*?)<\\/strong>/gi, '<b>$1</b>')\n  .replace(/<em>([\\s\\S]*?)<\\/em>/gi, '<i>$1</i>')\n  .replace(/<h[1-6][^>]*>([\\s\\S]*?)<\\/h[1-6]>/gi, '<b>$1</b>\\n');\n\n// ── 4. Strip all remaining unsupported tags (keep inner text) ─────────────────\nsafeText = safeText\n  .replace(/<sub>([^<]*)<\\/sub>/gi, '[$1]')   // E<sub>B</sub> → E[B]\n.replace(/<sup>([^<]*)<\\/sup>/gi, '^$1')    // x<sup>2</sup> → x^2\n.replace(/<\\/?(?:span|div|p|ul|ol|li|table|tr|td|th|hr|section|article|figure|img|svg)[^>]*>/gi, '')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\n// ── 5. Smart chunking — never cut in the middle of an HTML tag ────────────────\nconst chunkSize = 3800; // safe buffer below Telegram's 4096 limit\nconst chunks = [];\nlet i = 0;\n\nwhile (i < safeText.length) {\n  if (i + chunkSize >= safeText.length) {\n    chunks.push({ json: { ...$json, chunk: safeText.slice(i) } });\n    break;\n  }\n\n  // Walk back from cut point to find a newline or space\n  let end = i + chunkSize;\n  while (end > i && safeText[end] !== '\\n' && safeText[end] !== ' ') {\n    end--;\n  }\n  if (end === i) end = i + chunkSize; // fallback: hard cut\n\n  chunks.push({ json: { ...$json, chunk: safeText.slice(i, end) } });\n  i = end;\n}\n\nreturn chunks;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        896
+      ],
+      "id": "9e2c82e6-5aa3-45bc-83cd-909781b64b3d",
+      "name": "Code in JavaScript6"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst body = {\n  phash_col:       $('When Executed by Another Workflow').first().json.pHashBinary ||\n                   $('When Executed by Another Workflow').first().json.phash_binary ||\n                   $('When Executed by Another Workflow').first().json.diag_data.phash_binary || '',\n  simhash_binary:  $('When Executed by Another Workflow').first().json.simhash_binary || '',\n  solution_md:     $input.first().json.data || '',\n  confidence:      data.confidence ?? 0,\n  source_tag:      'gemini-2.5-flash',\n  subject:         $('When Executed by Another Workflow').first().json.subject,\n  chapter:         $('When Executed by Another Workflow').first().json.chapter,\n  topic:           $('When Executed by Another Workflow').first().json.topic,\n  keywords:        Array.isArray(data.keywords) ? data.keywords : [],\n  diagram_url:     $('When Executed by Another Workflow').first().json.file_url ?? null\n};\n\nreturn [{\n  json: {\n    ...data,\n    supabaseBodyJson: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        800
+      ],
+      "id": "ed595090-9152-4a65-a67c-0d4a7595b08e",
+      "name": "Code in JavaScript7"
+    },
+    {
+      "parameters": {
+        "chatId": "=-1003990692345",
+        "text": "={{ $('Code: Build Escalation Payload1').item.json.waMessageText }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -112,
+        608
+      ],
+      "id": "46629077-b672-4571-87e8-2d2a6dcd7e41",
+      "name": "Telegram: Send Escalation Text to Admin1",
+      "webhookId": "12969e60-2ec0-46f5-8e0a-930825bc7bfd",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "notes": "FR-9: Sends the escalation text message to admin via Telegram.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "operation": "sendDocument",
+        "chatId": "=-1003990692345",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        416
+      ],
+      "id": "25ad309c-a287-4869-8f2d-490cff03139a",
+      "name": "Telegram: Send Question Image to Admin2",
+      "webhookId": "09b3c2ff-b50c-4d45-b697-e38434982b8c",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "FR-9: Sends student's question image to admin via Telegram.\ncontinueOnFail=true: text-only questions have no photoDownloadUrl; safely skipped.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "text": "=⏳ <b>Your question has been forwarded to our expert tutor for a detailed review.</b>\n\nYou'll receive a solution shortly. Thank you for your patience!",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        784,
+        416
+      ],
+      "id": "7b015ce7-8282-44a6-911b-ccaf6c1d7d4a",
+      "name": "Telegram: ACK Student3",
+      "webhookId": "e221cae8-9bae-46d6-a49c-a6cb9aa52647",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends holding message to student so they know it has been escalated.\nReplies in the correct thread via messageId."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot8751060343:AAHV38osqjWVw9BE23g4C6st0E1FjRiruDU/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $json.photoid }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "5fc9c593-76bc-4216-a8ef-1392e37f2579",
+      "name": "HTTP: Get Telegram File Path",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1680,
+        800
+      ],
+      "notes": "Resolves the photoFileId to a CDN file_path using the Telegram Bot API."
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot8751060343:AAHV38osqjWVw9BE23g4C6st0E1FjRiruDU/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "0fbb9c92-05b0-49f1-bc31-0f0bbbe90924",
+      "name": "HTTP: Download Image Binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1456,
+        800
+      ],
+      "notes": "Downloads the actual image bytes from Telegram's CDN as binary. Stored as $binary.data."
+    },
+    {
+      "parameters": {
+        "jsCode": "const triggerData  = $('When Executed by Another Workflow').first().json;\nconst filePathData = $('HTTP: Get Telegram File Path').first().json;\nconst binaryData   = $('HTTP: Download Image Binary').first().json;\nconst test_score=80;\n\nconst combined = {\n  // ── Identity ──\n  chatId:             triggerData.chatId,\n  messageId:          triggerData.messageId,\n  threadMessageId:    triggerData.threadMessageId,\n  fromUserId:         triggerData.fromUserId,\n  fromUsername:       triggerData.fromUsername,\n  timestamp:          triggerData.timestamp,\n\n  // ── Photo ──\n  photoFileId:        triggerData.photoFileId,\n  photoDownloadUrl:   triggerData.photoDownloadUrl,\n  messageType:        triggerData.messageType,\n\n  // ── Classification ──\n  subject:            triggerData.subject,\n  chapter:            triggerData.chapter,\n  topic:              triggerData.topic,\n  keywords:           triggerData.keywords,\n  numerics:           triggerData.numerics,\n  difficulty:         triggerData.difficulty,\n\n  // ── Solution ──\n  summary:            triggerData.summary,\n  solutionMd:         triggerData.solutionMd,\n  solutionMdEscaped:  triggerData.solutionMdEscaped,\n  solutionPlain:      triggerData.solutionPlain,\n  final_answer:       triggerData.final_answer,\n\n  // ── AI meta ──\n  confidence:         triggerData.confidence,\n   // confidence:         test_score,\n  confidence_reason:  triggerData.confidence_reason,\n  finish_reason:      triggerData.finish_reason,\n  questionText:       triggerData.questionText,\n\n  // ── File path (HTTP: Get Telegram File Path2) ──\n  filePath:           filePathData?.result?.file_path ?? null,\n  fileId:             filePathData?.result?.file_id   ?? null,\n  fileSize:           filePathData?.result?.file_size ?? null,\n\n  // ── Perceptual hash / cache (HTTP: Download Image Binary2) ──\n  pHash:              binaryData.pHash,\n  pHashBinary:        binaryData.pHashBinary,\n  ocrText:            binaryData.ocrText,\n  cacheHit:           binaryData.cacheHit,\n  cacheRowId:         binaryData.cacheRowId,\n  hammingDistance:    binaryData.hammingDistance,\n};\n\nreturn [{ json: combined }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        800
+      ],
+      "id": "e29ed3c1-30e9-4fe2-be0e-3ea9e59624e7",
+      "name": "Code in JavaScript8"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst body = {\n  escalation_id: data.escalation_id,\n  chat_id:       $('When Executed by Another Workflow').first().json.triggerdata.chatId,\n  message_id:   $('When Executed by Another Workflow').first().json.triggerdata.messageId,\n  thread_id:   $('When Executed by Another Workflow').first().json.triggerdata.threadMessageId  ,\n  from_user_id:  $('When Executed by Another Workflow').first().json.triggerdata.fromUserId ?? 0,\n  from_username:$('When Executed by Another Workflow').first().json.triggerdata.fromUsername ?? 'Unknown',\n  question_text:$('When Executed by Another Workflow').first().json.triggerdata.ocrtext ?? '',\n  photo_url:     data.photoDownloadUrl ?? null,\n  draft_md:      data.solutionMd  ?? '',\n  confidence:    data.confidence  ?? 0,\n  reason:        data.escalation_reason,\n  subject:       data.subject     ?? 'Unknown',\n  chapter:       data.chapter     ?? 'Unknown',\n  topic:         data.topic       ?? 'Unknown',\n  keywords:      Array.isArray(data.keywords) ? data.keywords : [],\n  thread_link:   data.threadLink,\n  phash_binary:   $('When Executed by Another Workflow').first().json.pHashBinary ?? null,\n  status:        'pending'\n};\n\nreturn [{\n  json: {\n    ...data,\n    escalationBodyJson: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -560,
+        608
+      ],
+      "id": "1d6e0480-4deb-4fda-af98-3dc48e8b0957",
+      "name": "Code in JavaScript9"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "1fc99ce9-3c9c-4b07-af7d-b70d492effb0",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.imageSource }}",
+              "rightValue": "document",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        112,
+        608
+      ],
+      "id": "5e54c8fd-e442-407c-93a8-54170f82ee02",
+      "name": "If1"
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "=-1003990692345",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        704
+      ],
+      "id": "a402bca2-d909-44b1-9188-99310e06883d",
+      "name": "Telegram: Send Question Image to Admin3",
+      "webhookId": "09b3c2ff-b50c-4d45-b697-e38434982b8c",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "continueOnFail": true,
+      "notes": "FR-9: Sends student's question image to admin via Telegram.\ncontinueOnFail=true: text-only questions have no photoDownloadUrl; safely skipped.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "text": "=⏳ <b>Your question has been forwarded to our expert tutor for a detailed review.</b>\n\nYou'll receive a solution shortly. Thank you for your patience!",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        784,
+        704
+      ],
+      "id": "52ad3553-8878-4df7-8362-e933aad63d0a",
+      "name": "Telegram: ACK Student4",
+      "webhookId": "e221cae8-9bae-46d6-a49c-a6cb9aa52647",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends holding message to student so they know it has been escalated.\nReplies in the correct thread via messageId."
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull binary from the download node and attach to current item\nconst binaryItem = $('HTTP: Download Image Binary').first();\nconst currentJson = $input.first().json;\n\nreturn [{\n  json: currentJson,\n  binary: binaryItem.binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        416
+      ],
+      "id": "c6b455e7-3c81-4981-b335-e18bb92d4fb4",
+      "name": "Code in JavaScript10"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pull binary from the download node and attach to current item\nconst binaryItem = $('HTTP: Download Image Binary').first();\nconst currentJson = $input.first().json;\n\nreturn [{\n  json: currentJson,\n  binary: binaryItem.binary\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        336,
+        704
+      ],
+      "id": "ef8bb800-f836-4e67-a8d6-119735a81a78",
+      "name": "Code in JavaScript11"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-low-conf",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 85,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1680,
+        1280
+      ],
+      "id": "387843f8-f169-4736-8042-d6803ffdc7e9",
+      "name": "IF: Confidence Below Threshold2",
+      "notes": "True (output 0) → Escalate to admin WhatsApp\nFalse (output 1) → High confidence, skip escalation"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Build Escalation Payload (FR-9) ─────────────────────────────────────────\n// Constructs the full WhatsApp escalation message for the admin.\n// Assigns a short escalation_id used for all subsequent admin replies.\n// ─────────────────────────────────────────────────────────────────────────────\n\nconst upstream = $input.first().json;\n\n// ── 1. Generate escalation ID ─────────────────────────────────────────────────\nconst escalation_id = 'ESC-' + Date.now().toString(36).toUpperCase().slice(-6);\n\n// ── 2. Determine escalation reason ────────────────────────────────────────────\nlet escalation_reason = 'low_confidence';\nif (!upstream.solutionMd || upstream.solutionMd.trim().length < 50) {\n  escalation_reason = 'empty_or_short_solution';\n} else if (upstream.subject === 'Unknown' || upstream.topic === 'Unknown') {\n  escalation_reason = 'unclassified_topic';\n} else if ((upstream.confidence ?? 1) < 0.75) {\n  escalation_reason = 'low_confidence';\n}\n\n// ── 3. Build Telegram thread deep-link ────────────────────────────────────────\n// Group chats have negative IDs like -100XXXXXXXXX; strip the -100 prefix\nconst rawChatId = String(upstream.chatId || '');\nconst cleanChatId = rawChatId.startsWith('-100') ? rawChatId.slice(4) : rawChatId.replace('-', '');\nconst threadLink = `https://t.me/c/${cleanChatId}/${upstream.threadMessageId}`;\n\n// ── 4. Truncate AI draft for WhatsApp (4096 char limit) ───────────────────────\nconst draft = upstream.solutionMd || '';\nconst draftPreview = draft;\n// Strip HTML tags for WhatsApp readability\nconst draftClean = draftPreview\n  .replace(/<b>/gi, '*').replace(/<\\/b>/gi, '*')\n  .replace(/<i>/gi, '_').replace(/<\\/i>/gi, '_')\n  .replace(/<code>/gi, '`').replace(/<\\/code>/gi, '`')\n  .replace(/<pre>/gi, '```\\n').replace(/<\\/pre>/gi, '\\n```')\n  .replace(/<[^>]+>/g, '');\n\n// ── 5. Build multi-line WhatsApp message ──────────────────────────────────────\nconst waMessageText = [\n  `🚨 <b>ESCALATION [${escalation_id}]</b>`,\n  ``,\n  `👤 <b>Student:</b> ${upstream.fromUsername || 'Unknown'}`,\n  `📚 <b>Subject:</b> ${upstream.subject || 'Unknown'} → ${upstream.chapter || 'Unknown'}`,\n  `🔖 <b>Topic:</b> ${upstream.topic || 'Unknown'}`,\n  `📊 <b>Difficulty:</b> ${upstream.difficulty || 'medium'}`,\n  `🎯 <b>AI Confidence:</b> ${upstream.confidence ?? 0}%`,\n  `⚠️ <b>Reason:</b> ${escalation_reason}`,\n  ``,\n  `❓ <b>Question:</b>`,\n  upstream.questionText?.trim() || '<i>(image only — no caption text)</i>',\n  ``,\n  `🤖 <b>AI Draft (preview):</b>`,\n  draftClean,\n  ``,\n  `🔗 <b>Telegram Thread:</b> ${threadLink}`,\n  ``,\n  `──────────────────────────`,\n  `Reply options:`,\n  `• Type your solution (include <code>[${escalation_id}]</code>)`,\n  `• Send a voice note with <code>[${escalation_id}]</code> in caption`,\n  `• <b>PENDING</b> — see all open escalations`,\n  `• <b>UPDATE ${escalation_id}</b> — save final to knowledge base`,\n].join('\\n');\n\nreturn [{\n  json: {\n    ...upstream,\n    escalation_id,\n    escalation_reason,\n    draftPreview,\n    draftClean,\n    threadLink,\n    waMessageText,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        1088
+      ],
+      "id": "ae3a1178-267f-47b7-bdf5-22ccd372ffbf",
+      "name": "Code: Build Escalation Payload2",
+      "notes": "FR-9: Assembles the WhatsApp escalation payload.\nOutputs: escalation_id, escalation_reason, waMessageText, draftClean, threadLink."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/escalations",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "return=representation"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.escalationBodyJson }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1008,
+        1088
+      ],
+      "id": "5c0f3b24-4652-4ab4-b4c0-ff78b15cf17b",
+      "name": "HTTP: Supabase INSERT Escalation2",
+      "alwaysOutputData": true,
+      "notes": "FR-10: Inserts escalation row with status=pending.\nUse Prefer: return=representation to get the inserted row back."
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "text": "={{ ($json.chunk) }}",
+        "replyMarkup": "inlineKeyboard",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $('When Executed by Another Workflow').item.json.messageId }}"
+        }
+      },
+      "id": "c746283a-76b7-4e5a-b136-df37ec0c4927",
+      "name": "Telegram: Send Solution2",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1,
+      "position": [
+        -1232,
+        1472
+      ],
+      "webhookId": "96ff469d-042a-40c3-96ff-2cc41717d542",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      },
+      "notes": "Sends the freshly generated HTML solution to the Telegram group thread. Replies in the correct thread via threadMessageId."
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://fuamnucdmfirddocfaig.supabase.co/rest/v1/question_cache?on_conflict=phash_col",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "Prefer",
+              "value": "resolution=merge-duplicates,return=minimal"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $json.supabaseBodyJson }}",
+        "options": {}
+      },
+      "id": "f367010b-e73a-41d3-a80b-69a135197e41",
+      "name": "HTTP: Supabase Cache Insert2",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1008,
+        1280
+      ],
+      "alwaysOutputData": true,
+      "notes": "Upserts the new solution into question_cache so future identical (or near-identical) images are served from cache. `Prefer: resolution=merge-duplicates` prevents duplicate rows on re-runs."
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nlet upstream = {};\ntry {\n  upstream = $('When Executed by Another Workflow').first().json ?? {};\n} catch(e) { upstream = {}; }\n\nconst body = {\n  simhash_binary: upstream.simhash_binary || data.simhash_binary || '',\n  solution_md:    upstream.solution?.solution || upstream.solutionMd || data.solutionMd || '',\n  confidence:     upstream.solution?.confidence_score || upstream.confidence || data.confidence || null,\n  source_tag:     'gemini-2.5-flash',\n  subject:        upstream.subject || data.subject || 'Unknown',\n  chapter:        upstream.chapter || data.chapter || 'Unknown',\n  topic:          upstream.topic   || data.topic   || 'Unknown',\n  diagram_url:    upstream.file_url || data.file_url || data.diagramurl || null,\n  keywords:       Array.isArray(data.keywords) ? data.keywords : []\n};\n\nreturn [{\n  json: {\n    ...data,\n    supabaseBodyJson: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        1280
+      ],
+      "id": "41022098-9787-4a16-b37a-e065d4e190ad",
+      "name": "Code in JavaScript13"
+    },
+    {
+      "parameters": {
+        "chatId": "=-1003990692345",
+        "text": "={{ $('Code: Build Escalation Payload2').item.json.waMessageText }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML"
+        }
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -784,
+        1088
+      ],
+      "id": "d6f5d515-53e2-4293-8389-bd88e1c1cacf",
+      "name": "Telegram: Send Escalation Text to Admin2",
+      "webhookId": "12969e60-2ec0-46f5-8e0a-930825bc7bfd",
+      "credentials": {
+        "telegramApi": {
+          "id": "pOfUrIP3gNxtPmFU",
+          "name": "Telegram account 2"
+        }
+      },
+      "notes": "FR-9: Sends the escalation text message to admin via Telegram.\nREPLACE: YOUR_ADMIN_TELEGRAM_CHAT_ID"
+    },
+    {
+      "parameters": {
+        "jsCode": "// const triggerData  = $('When Executed by Another Workflow').first().json;\n\n// const test_score=80;\n// const combined = {\n//   // ── Identity ──\n//   chatId:             triggerData.chatId,\n//   messageId:          triggerData.messageId,\n//   threadMessageId:    triggerData.threadMessageId,\n//   fromUserId:         triggerData.fromUserId,\n//   fromUsername:       triggerData.fromUsername,\n//   timestamp:          triggerData.timestamp,\n\n\n//   messageType:        triggerData.messageType,\n\n//   // ── Classification ──\n//   subject:            triggerData.subject,\n//   chapter:            triggerData.chapter,\n//   topic:              triggerData.topic,\n//   keywords:           triggerData.keywords,\n//   numerics:           triggerData.numerics,\n//   difficulty:         triggerData.difficulty,\n\n//   // ── Solution ──\n//   summary:            triggerData.summary || $input.first().json.solveData.summary,\n//   solutionMd:         triggerData.solutionMd || $input.first().json.solveData.solution,\n//   solutionMdEscaped:  triggerData.solutionMdEscaped,\n//   solutionPlain:      triggerData.solutionPlain,\n//   final_answer:       triggerData.final_answer,\n\n//   // ── AI meta ──\n//   // confidence:         triggerData.confidence,\n//   confidence:         triggerData.confidence ||$input.first().json.solveData.confidence_score ,\n//   confidence_reason:  triggerData.confidence_reason || $input.first().json.solveData.confidence_reason,\n//   finish_reason:      triggerData.finish_reason || $input.first().json.solveData.finish_reason,\n//   questionText:       triggerData.questionText,\n\n\n//   // ── Perceptual hash / cache (HTTP: Download Image Binary2) ──\n//   simhash_binary:     $input.first().json.simhash_binary  \n// };\n\n// return [{ json: combined }];\n\n\n\nconst triggerData = $('When Executed by Another Workflow').first().json;\nconst inputData = $input.first().json; // This is the data from the 'Switch' node\n\nconst combined = {\n  // Identity\n  chatId:          triggerData.chatId,\n  messageId:       triggerData.messageId,\n  threadMessageId: triggerData.threadMessageId,\n  fromUserId:      triggerData.fromUserId,\n  fromUsername:    triggerData.fromUsername,\n  timestamp:       triggerData.timestamp,\n  messageType:     triggerData.messageType,\n\n  // Classification\n  subject:    inputData.subject    || triggerData.subject,\n  chapter:    inputData.chapter    || triggerData.chapter,\n  topic:      inputData.topic      || triggerData.topic,\n  keywords:   inputData.keywords   || triggerData.keywords,\n  difficulty: inputData.difficulty || triggerData.difficulty,\n\n  // Solution (Removed .solveData)\n  summary:      inputData.summary      || triggerData.summary,\n  solutionMd:   inputData.solutionMd   || triggerData.solutionMd,\n  final_answer: inputData.final_answer || triggerData.final_answer,\n  file_url: $('When Executed by Another Workflow').first().json.file_url,\n\n  // AI meta\n  confidence:        inputData.confidence_score  || inputData.confidence || triggerData.confidence,\n  confidence_reason: inputData.confidence_reason || triggerData.confidence_reason,\n  finish_reason:     inputData.finish_reason     || triggerData.finish_reason,\n  questionText:      triggerData.questionText,\n\n  // Perceptual hash\n  simhash_binary: inputData.simhash_binary\n};\n\nreturn [{ json: combined }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1904,
+        1280
+      ],
+      "id": "390f966f-1bcf-430d-b751-ed7ea24d2f97",
+      "name": "Code in JavaScript14"
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\n\nconst body = {\n  escalation_id: data.escalation_id,\n  chat_id:       data.chatId,\n  message_id:    data.messageId,\n  thread_id:     data.threadMessageId,\n  from_user_id:  data.fromUserId  ?? 0,\n  from_username: data.fromUsername ?? 'Unknown',\n  question_text: data.questionText ?? '',\n  photo_url:     data.photoDownloadUrl ?? null,\n  draft_md:      data.solutionMd  ?? '',\n  confidence:    data.confidence  ?? 0,\n  reason:        data.escalation_reason,\n  subject:       data.subject     ?? 'Unknown',\n  chapter:       data.chapter     ?? 'Unknown',\n  topic:         data.topic       ?? 'Unknown',\n  keywords:      Array.isArray(data.keywords) ? data.keywords : [],\n  thread_link:   data.threadLink,\n  phash_binary:   $('When Executed by Another Workflow').first().json.pHashBinary ?? null,\n  status:        'pending'\n};\n\nreturn [{\n  json: {\n    ...data,\n    escalationBodyJson: JSON.stringify(body)\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1232,
+        1088
+      ],
+      "id": "5e567974-0608-4f20-b38b-bc78fe9d0dd4",
+      "name": "Code in JavaScript15"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ed734862-5496-4919-acd8-10cf1c7a4bbb",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.diagNeeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "5efbd268-10ed-475e-ae8b-da41dd18de57",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.solveData.diagramNeeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "cbc2a3af-2c59-419e-bd16-64b49aa992bc",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.solution.diagram_needed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1008,
+        1472
+      ],
+      "id": "9bd1dc57-0f66-47b6-b6b3-bcf48a0539e5",
+      "name": "If3"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Code in JavaScript14').item.json.file_url }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -784,
+        1472
+      ],
+      "id": "a8dc7edb-90a8-48a0-abc0-96465eb8495c",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -560,
+        1472
+      ],
+      "id": "4c2a010e-72b5-45e6-be9d-e9ea35366720",
+      "name": "Send a photo message",
+      "webhookId": "58b33ae2-704b-4844-a8e8-79babc5a342a",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ed734862-5496-4919-acd8-10cf1c7a4bbb",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.solveData.diagramNeeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "5c3e4f14-20cf-4de3-bd83-6f76659ebf6e",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.diag_data.solveData.diagramNeeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "525eeebb-cb86-4402-8d2d-f1e30516452c",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.diag_data.diagramNeeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "bd3a3708-7078-4009-b489-14fa7227b024",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.imageneeded }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            },
+            {
+              "id": "b898bd73-e58a-4fc9-adcd-b88b41eca3ce",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.file_url }}",
+              "rightValue": true,
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        112,
+        992
+      ],
+      "id": "7c261923-cc26-47d8-8639-c3c94041c4d2",
+      "name": "If4"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('When Executed by Another Workflow').item.json.file_url }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        336,
+        992
+      ],
+      "id": "e906abd4-8fe6-4cce-b357-ce7a940a136c",
+      "name": "HTTP Request1"
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        560,
+        992
+      ],
+      "id": "d3004af4-c16f-4750-a5e9-5ae6291ac21e",
+      "name": "Send a photo message1",
+      "webhookId": "58b33ae2-704b-4844-a8e8-79babc5a342a",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "ed734862-5496-4919-acd8-10cf1c7a4bbb",
+              "leftValue": "={{ $('When Executed by Another Workflow').item.json.diag_data.diagram_needed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -560,
+        224
+      ],
+      "id": "39c46ac1-11b8-4617-806c-1ac885473249",
+      "name": "If5"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Code in JavaScript14').item.json.file_url }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        -336,
+        224
+      ],
+      "id": "b0f2812a-27c0-467f-aee3-a09a72523b38",
+      "name": "HTTP Request2"
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $('When Executed by Another Workflow').item.json.chatId }}",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -112,
+        224
+      ],
+      "id": "8bfe5fed-f96c-4d31-9e22-6d2219e73a1d",
+      "name": "Send a photo message2",
+      "webhookId": "58b33ae2-704b-4844-a8e8-79babc5a342a",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── 0. Extract raw text safely ────────────────────────────────────────────────\nconst sourceJson = $('When Executed by Another Workflow').first().json;\nconst inputJson  = $input.first().json;\n\nconst raw =\n  sourceJson?.solution?.solution    // ← the actual nested string\n  ?? sourceJson?.solution           // fallback if it's already a string\n  ?? inputJson?.solution?.solution\n  ?? inputJson?.solution\n  ?? sourceJson?.solutionMd\n  ?? inputJson?.solutionMd\n  ?? '';\n\n\n// Force to string regardless of what the upstream node returned\nconst rawText = typeof raw === 'string'\n  ? raw\n  : typeof raw === 'object' && raw !== null\n    ? JSON.stringify(raw)\n    : String(raw ?? '');\n\n// ── 1. Fix literal \\n strings → actual newlines ──────────────────────────────\nlet safeText = rawText.replace(/\\\\n/g, '\\n');\n\n// ── 2. Convert supported HTML variants → Telegram equivalents ────────────────\nsafeText = safeText\n  .replace(/<br\\s*\\/?>/gi, '\\n')\n  .replace(/<strong>([\\s\\S]*?)<\\/strong>/gi, '<b>$1</b>')\n  .replace(/<em>([\\s\\S]*?)<\\/em>/gi, '<i>$1</i>')\n  .replace(/<h[1-6][^>]*>([\\s\\S]*?)<\\/h[1-6]>/gi, '<b>$1</b>\\n')\n  .replace(/<sub>([^<]*)<\\/sub>/gi, '[$1]')\n  .replace(/<sup>([^<]*)<\\/sup>/gi, '^$1');\n\n// ── 3. Strip remaining unsupported block/inline tags (keep inner text) ────────\nsafeText = safeText.replace(\n  /<\\/?(?:span|div|p|ul|ol|li|table|tr|td|th|hr|section|article|figure|img|svg)[^>]*>/gi,\n  ''\n);\n\n// ── 4. Collect and protect all VALID Telegram HTML tags ──────────────────────\nconst placeholders = [];\nsafeText = safeText.replace(\n  /<(\\/?(?:b|i|u|s|code|pre)>|a\\s[^>]*>|\\/a>)/g,\n  (match) => {\n    const idx = placeholders.length;\n    placeholders.push(match);\n    return `\\x00PLACEHOLDER_${idx}\\x00`;\n  }\n);\n\n// ── 5. Escape ALL remaining bare < and > ─────────────────────────────────────\nsafeText = safeText\n  .replace(/&(?!(lt|gt|amp|quot|apos);)/g, '&amp;')\n  .replace(/</g, '&lt;')\n  .replace(/>/g, '&gt;');\n\n// ── 6. Restore valid Telegram HTML tags ──────────────────────────────────────\nsafeText = safeText.replace(\n  /\\x00PLACEHOLDER_(\\d+)\\x00/g,\n  (_, idx) => placeholders[Number(idx)]\n);\n\n// ── 7. Collapse excess blank lines ────────────────────────────────────────────\nsafeText = safeText\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\n// ── 8. Smart chunking ─────────────────────────────────────────────────────────\nconst chunkSize = 3800;\nconst chunks = [];\nlet i = 0;\n\nwhile (i < safeText.length) {\n  if (i + chunkSize >= safeText.length) {\n    chunks.push({ json: { ...$json, chunk: safeText.slice(i) } });\n    break;\n  }\n  let end = i + chunkSize;\n  while (end > i && safeText[end] !== '\\n' && safeText[end] !== ' ') {\n    end--;\n  }\n  if (end === i) end = i + chunkSize;\n  chunks.push({ json: { ...$json, chunk: safeText.slice(i, end) } });\n  i = end;\n}\n\nreturn chunks;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1456,
+        1376
+      ],
+      "id": "563e6c6c-e13b-41a4-870a-44fbcd9df97b",
+      "name": "Code in JavaScript12"
+    },
+    {
+      "parameters": {
+        "jsCode": "const isimage =\n  $json.triggerdata?.messageType ||\n  $('When Executed by Another Workflow').item.json.messageType ||\n  null;\n\nreturn {\n  isimage\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2352,
+        800
+      ],
+      "id": "9319e9eb-d8fb-46e1-9ef6-253fa5135908",
+      "name": "Code in JavaScript16"
+    },
+    {
+      "parameters": {
+        "jsCode": "const chatid =\n   $('When Executed by Another Workflow').item.json.chatId ??\n   $('When Executed by Another Workflow').first().json.chatid\n  ??\n  null;\n\nreturn {\n  chatid\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -336,
+        992
+      ],
+      "id": "763a52a3-8246-4c4c-b79a-5ce417bb1d2a",
+      "name": "Code in JavaScript17"
+    },
+    {
+      "parameters": {
+        "jsCode": "const photoid =\n $('When Executed by Another Workflow').item.json.photoid ||\n   $('When Executed by Another Workflow').first().json.diag_data.photoid||\n  null;\n\nreturn {\n  photoid\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1904,
+        800
+      ],
+      "id": "ef87882b-3335-43d3-a75b-f32c53de3bb3",
+      "name": "Code in JavaScript18"
+    },
+    {
+      "parameters": {
+        "jsCode": " const data= $input.first().json.solutionMd ||   $('When Executed by Another Workflow').first().json.solutionMd   ||  $('When Executed by Another Workflow').first().json.diag_data.solveData.solution || $('When Executed by Another Workflow').first().json.solveData.solution;\n\nreturn{\n  data:data\n}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -784,
+        896
+      ],
+      "id": "c03ba979-d78a-4ca1-9ebc-8d5e93a76f4b",
+      "name": "Code in JavaScript19"
+    }
+  ],
+  "connections": {
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript16",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Confidence Below Threshold": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Escalation Payload",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Escalation Payload": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Supabase INSERT Escalation": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Escalation Text to Admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Solution": {
+      "main": [
+        [
+          {
+            "node": "If5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Solution",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Supabase Cache Insert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Escalation Text to Admin": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Question Image to Admin": {
+      "main": [
+        [
+          {
+            "node": "Telegram: ACK Student1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Get Telegram File Path2": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Download Image Binary2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Download Image Binary2": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "IF: Confidence Below Threshold",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Supabase INSERT Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Question Image to Admin1": {
+      "main": [
+        [
+          {
+            "node": "Telegram: ACK Student2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript4": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Question Image to Admin",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript5": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Question Image to Admin1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Get Telegram File Path2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript18",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript14",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Confidence Below Threshold1": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Escalation Payload1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript19",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Escalation Payload1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Supabase INSERT Escalation1": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Escalation Text to Admin1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Solution1": {
+      "main": [
+        [
+          {
+            "node": "If4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript6": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript7",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code in JavaScript17",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript7": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Supabase Cache Insert1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Escalation Text to Admin1": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Question Image to Admin2": {
+      "main": [
+        [
+          {
+            "node": "Telegram: ACK Student3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Get Telegram File Path": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Download Image Binary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Download Image Binary": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript8": {
+      "main": [
+        [
+          {
+            "node": "IF: Confidence Below Threshold1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript9": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Supabase INSERT Escalation1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript10",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript11",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Question Image to Admin3": {
+      "main": [
+        [
+          {
+            "node": "Telegram: ACK Student4",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript10": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Question Image to Admin2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript11": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Question Image to Admin3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Confidence Below Threshold2": {
+      "main": [
+        [
+          {
+            "node": "Code: Build Escalation Payload2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript12",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Build Escalation Payload2": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript15",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Supabase INSERT Escalation2": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Escalation Text to Admin2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Solution2": {
+      "main": [
+        [
+          {
+            "node": "If3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript13": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Supabase Cache Insert2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript14": {
+      "main": [
+        [
+          {
+            "node": "IF: Confidence Below Threshold2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript15": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Supabase INSERT Escalation2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If3": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Send a photo message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If4": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request1": {
+      "main": [
+        [
+          {
+            "node": "Send a photo message1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If5": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request2": {
+      "main": [
+        [
+          {
+            "node": "Send a photo message2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript12": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript13",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Telegram: Send Solution2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript16": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript17": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Solution1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript18": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Get Telegram File Path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript19": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript6",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "When Executed by Another Workflow": [
+      {
+        "isBotTagged": true,
+        "messageType": "text",
+        "chatId": 1821637195,
+        "messageId": 1540,
+        "threadMessageId": 1540,
+        "fromUserId": 1821637195,
+        "fromUsername": "Meet",
+        "questionText": "@test_vertex_tele_bot\nIf the hysteresis and eddy current losses of a 1-φ transformer working on 250V, 50 Hz supply and Ph and Pe respectively, then the percentage decrease in these when operated on 200V, 40 Hz supply are",
+        "imageSource": null,
+        "photoFileId": null,
+        "hasPhoto": false,
+        "hasText": true,
+        "timestamp": "2026-06-08T16:55:54.000Z",
+        "questionsHit": false,
+        "cachedSolutionMd": null,
+        "questionsConfidence": null,
+        "questionsSubject": null,
+        "questionsChapter": null,
+        "questionsTopic": null,
+        "questionsAnswerText": null,
+        "questionsRowId": null,
+        "questionsDistance": null,
+        "ragHits": [
+          {
+            "id": "3e5913b7-ca77-432a-8c17-e2ea1f0b69d1",
+            "source_doc": "Lecture 33 - GATE PYQ Discussion on Transformers.pdf",
+            "kind": "question",
+            "subject": "Electrical_Machines_Notes",
+            "chapter": "Electrical_Machines_Framework_PPTs",
+            "topic": "A single-phase 400V, 50Hz transformer has an iron loss of 5000W at the",
+            "q_no": 7,
+            "page_number": 8,
+            "chunk_text": "A single-phase 400V, 50Hz transformer has an iron loss of 5000W at the rated condition. When operated at 200V, 25Hz, the iron loss is 2000W. When operated at 416V, 52Hz, the value of the hysteresis loss divided by the eddy current loss is _____________. [EE 2016-01]\n",
+            "distance": 0.239936804960861
+          },
+          {
+            "id": "5893850d-438d-4e3c-9734-b66528d79848",
+            "source_doc": "Lecture 15 - Assignment Discussion.pdf",
+            "kind": "question",
+            "subject": "Electrical_Machines_Notes",
+            "chapter": "Electrical_Machines_Framework_PPTs",
+            "topic": "A single-phase transformer rated for 220/440 V, 50 Hz operates at no load at",
+            "q_no": 17,
+            "page_number": 81,
+            "chunk_text": "A single-phase transformer rated for 220/440 V, 50 Hz operates at no load at 220 V, 40 Hz. This frequency operation at rated voltage results in which one of the following?\n(a) Increase of both eddy-current and hysteresis losses\n(b) Reduction of both eddy-current and hysteresis losses\n(c) Reduction of hysteresis loss and increase in eddy-current loss\n(d) Increase of hysteresis loss and no change in the eddy-current loss",
+            "distance": 0.242604212998972
+          },
+          {
+            "id": "04ab942d-e8be-4e1d-a22f-d60c5e50a8fd",
+            "source_doc": "Lecture 20 - Three Phase Transformers Part 2.pdf",
+            "kind": "question",
+            "subject": "Electrical_Machines_Notes",
+            "chapter": "Electrical_Machines_Framework_PPTs",
+            "topic": "A 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%,",
+            "q_no": 6,
+            "page_number": 48,
+            "chunk_text": "A 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%, 0.8% , 0.3% respectively. If this transformer is operated form 22kV, 50 Hz supply, calculate η1 at f = 25 Hz and η2 at f = 50Hz? (The current is assumed to remain same in both cases)\n(a) η1 = 97.18%, η2 = 95.67%\n(b) η1 = 93.18%, η2 = 97.75%\n(c) η1 = 94.18%, η2 = 96.75%\n(d) η1 = 97.18%, η2 = 97.75%",
+            "distance": 0.24359818888583
+          },
+          {
+            "id": "90b3cdf3-c585-4e56-bb29-97578ab951b7",
+            "source_doc": "Lecture 14 - Transformer Losses and Efficiency Part 2.pdf",
+            "kind": "question",
+            "subject": "Electrical_Machines_Notes",
+            "chapter": "Electrical_Machines_Framework_PPTs",
+            "topic": "A 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%,",
+            "q_no": 6,
+            "page_number": 83,
+            "chunk_text": "A 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%, 0.8% , 0.3% respectively. If this transformer is operated form 22kV, 50 Hz supply, calculate η1 at f = 25 Hz and η2 at f = 50Hz? (The current is assumed to remain same in both cases)\n(a) η1 = 97.18%, η2 = 95.67%\n(b) η1 = 93.18%, η2 = 97.75%\n(c) η1 = 94.18%, η2 = 96.75%\n(d) η1 = 97.18%, η2 = 97.75%",
+            "distance": 0.24359818888583
+          },
+          {
+            "id": "6a810338-94ad-43e2-9af1-ddbc8599a547",
+            "source_doc": "Lecture 15 - Assignment Discussion.pdf",
+            "kind": "question",
+            "subject": "Electrical_Machines_Notes",
+            "chapter": "Electrical_Machines_Framework_PPTs",
+            "topic": "If the frequency of input voltage of transformer is increased keeping the",
+            "q_no": 8,
+            "page_number": 72,
+            "chunk_text": "If the frequency of input voltage of transformer is increased keeping the magnitude of voltage unchanged, then:\n(a) both hysteresis loss and eddy current loss in the core will increase\n(b) hysteresis loss will increase but eddy current loss will decrease\n(c) hysteresis loss will decrease but eddy current loss will increase\n(d) hysteresis loss will decrease but eddy current loss will remain unchanged",
+            "distance": 0.251722309195654
+          },
+          {
+            "id": "da150e05-7a2c-43d5-928b-f0498327aed7",
+            "source_doc": "Lecture 15 - Assignment Discussion.pdf",
+            "kind": "question",
+            "subject": "Electrical_Machines_Notes",
+            "chapter": "Electrical_Machines_Framework_PPTs",
+            "topic": "A 5 kV, 25 Hz, single phase transformer has copper, hysteresis and eddy current",
+            "q_no": 20,
+            "page_number": 84,
+            "chunk_text": "A 5 kV, 25 Hz, single phase transformer has copper, hysteresis and eddy current losses of 1.4, 0.6, 0.5 percent of full load output. If operated on 10 kV, 50 Hz system, The percentage copper, hysteresis and eddy current losses, with same current in the windings are\n(a) 1.7, 0.6, 0.5\n(b) 1.4, 1.2, 2.0\n(c) 0.7, 0.6, 1.0\n(d) 1.4, 0.6, 1.0 Brain Teaser",
+            "distance": 0.251831762039546
+          }
+        ],
+        "ragContext": "[1] Electrical_Machines_Notes › Electrical_Machines_Framework_PPTs › A single-phase 400V, 50Hz transformer has an iron loss of 5000W at the (page 8, Q7)\nA single-phase 400V, 50Hz transformer has an iron loss of 5000W at the rated condition. When operated at 200V, 25Hz, the iron loss is 2000W. When operated at 416V, 52Hz, the value of the hysteresis loss divided by the eddy current loss is _____________. [EE 2016-01]\n\n[2] Electrical_Machines_Notes › Electrical_Machines_Framework_PPTs › A single-phase transformer rated for 220/440 V, 50 Hz operates at no load at (page 81, Q17)\nA single-phase transformer rated for 220/440 V, 50 Hz operates at no load at 220 V, 40 Hz. This frequency operation at rated voltage results in which one of the following?\n(a) Increase of both eddy-current and hysteresis losses\n(b) Reduction of both eddy-current and hysteresis losses\n(c) Reduction of hysteresis loss and increase in eddy-current loss\n(d) Increase of hysteresis loss and no change in the eddy-current loss\n\n[3] Electrical_Machines_Notes › Electrical_Machines_Framework_PPTs › A 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%, (page 48, Q6)\nA 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%, 0.8% , 0.3% respectively. If this transformer is operated form 22kV, 50 Hz supply, calculate η1 at f = 25 Hz and η2 at f = 50Hz? (The current is assumed to remain same in both cases)\n(a) η1 = 97.18%, η2 = 95.67%\n(b) η1 = 93.18%, η2 = 97.75%\n(c) η1 = 94.18%, η2 = 96.75%\n(d) η1 = 97.18%, η2 = 97.75%\n\n[4] Electrical_Machines_Notes › Electrical_Machines_Framework_PPTs › A 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%, (page 83, Q6)\nA 11/0.4 kV, 25 Hz transformer ha Ohmic hysteresis and eddy current loss of 1.8%, 0.8% , 0.3% respectively. If this transformer is operated form 22kV, 50 Hz supply, calculate η1 at f = 25 Hz and η2 at f = 50Hz? (The current is assumed to remain same in both cases)\n(a) η1 = 97.18%, η2 = 95.67%\n(b) η1 = 93.18%, η2 = 97.75%\n(c) η1 = 94.18%, η2 = 96.75%\n(d) η1 = 97.18%, η2 = 97.75%\n\n[5] Electrical_Machines_Notes › Electrical_Machines_Framework_PPTs › If the frequency of input voltage of transformer is increased keeping the (page 72, Q8)\nIf the frequency of input voltage of transformer is increased keeping the magnitude of voltage unchanged, then:\n(a) both hysteresis loss and eddy current loss in the core will increase\n(b) hysteresis loss will increase but eddy current loss will decrease\n(c) hysteresis loss will decrease but eddy current loss will increase\n(d) hysteresis loss will decrease but eddy current loss will remain unchanged\n\n[6] Electrical_Machines_Notes › Electrical_Machines_Framework_PPTs › A 5 kV, 25 Hz, single phase transformer has copper, hysteresis and eddy current (page 84, Q20)\nA 5 kV, 25 Hz, single phase transformer has copper, hysteresis and eddy current losses of 1.4, 0.6, 0.5 percent of full load output. If operated on 10 kV, 50 Hz system, The percentage copper, hysteresis and eddy current losses, with same current in the windings are\n(a) 1.7, 0.6, 0.5\n(b) 1.4, 1.2, 2.0\n(c) 0.7, 0.6, 1.0\n(d) 1.4, 0.6, 1.0 Brain Teaser",
+        "ocrtext": "",
+        "ragHitCount": 6,
+        "topDistance": 0.239936804960861,
+        "normalized_text": "test_vertex_tele_bot if the hysteresis and eddy current losses of a 1 transformer working on 250v 50 hz supply and ph and pe respectively then the percentage decrease in these when operated on 200v 40 hz supply are",
+        "simhash_binary": "0010000011101110100010100000000000100000111011101000101000000000",
+        "source_type": "text",
+        "cacheHit": false,
+        "cachedConfidence": null,
+        "cachedSourceTag": null,
+        "cachedSubject": null,
+        "cachedChapter": null,
+        "cachedTopic": null,
+        "cachedKeywords": [],
+        "hammingDistance": null,
+        "cacheRowId": null,
+        "subject": "Electrical Engineering",
+        "chapter": "Transformers",
+        "topic": "Magnetic Losses",
+        "keywords": [
+          "hysteresis loss",
+          "eddy current loss",
+          "transformer",
+          "frequency",
+          "voltage"
+        ],
+        "numerics": [
+          250,
+          50,
+          200,
+          40
+        ],
+        "difficulty": "hard",
+        "solveData": {
+          "summary": "Calculate the percentage decrease in hysteresis and eddy current losses of a transformer when the supply voltage and frequency are changed from 250V, 50Hz to 200V, 40Hz.",
+          "solution": "Step 1: Check the ratio of voltage (V) to frequency (f). For the initial state, V1/f1 = 250 / 50 = 5. For the final state, V2/f2 = 200 / 40 = 5. Since V/f is constant, the maximum flux density (Bm) in the core remains constant.\nStep 2: Determine the change in hysteresis loss (Ph). For a constant Bm, Ph is directly proportional to frequency (f). Therefore, Ph2 / Ph1 = f2 / f1 = 40 / 50 = 0.8. The percentage decrease is (1 - 0.8) * 100 = 20%.\nStep 3: Determine the change in eddy current loss (Pe). For a constant Bm, Pe is proportional to the square of the frequency (f^2). Therefore, Pe2 / Pe1 = (f2 / f1)^2 = (40 / 50)^2 = 0.8^2 = 0.64. The percentage decrease is (1 - 0.64) * 100 = 36%.",
+          "final_answer": "Hysteresis loss decreases by 20% and eddy current loss decreases by 36%.",
+          "confidence_score": 100,
+          "confidence_reason": "The solution correctly identifies that the V/f ratio is constant, leading to the simplified proportionalities for magnetic losses.",
+          "diagram_needed": false,
+          "diagram_type": null,
+          "diagramNeeded": false,
+          "diagramType": null,
+          "diagramSpec": null,
+          "circuitSpec": null,
+          "graphSpec": null,
+          "hasDiagram": false,
+          "_rawGeminiText": "{\"summary\":\"Calculate the percentage decrease in hysteresis and eddy current losses of a transformer when the supply voltage and frequency are changed from 250V, 50Hz to 200V, 40Hz.\",\"solution\":\"Step 1: Check the ratio of voltage (V) to frequency (f). For the initial state, V1/f1 = 250 / 50 = 5. For the final state, V2/f2 = 200 / 40 = 5. Since V/f is constant, the maximum flux density (Bm) in the core remains constant.\\nStep 2: Determine the change in hysteresis loss (Ph). For a constant Bm, Ph is directly proportional to frequency (f). Therefore, Ph2 / Ph1 = f2 / f1 = 40 / 50 = 0.8. The percentage decrease is (1 - 0.8) * 100 = 20%.\\nStep 3: Determine the change in eddy current loss (Pe). For a constant Bm, Pe is proportional to the square of the frequency (f^2). Therefore, Pe2 / Pe1 = (f2 / f1)^2 = (40 / 50)^2 = 0.8^2 = 0.64. The percentage decrease is (1 - 0.64) * 100 = 36%.\",\"final_answer\":\"Hysteresis loss decreases by 20% and eddy current loss decreases by 36%.\",\"confidence_score\":100,\"confidence_reason\":\"The solution correctly identifies that the V/f ratio is constant, leading to the simplified proportionalities for magnetic losses.\",\"diagram_needed\":false,\"diagram_type\":null}"
+        },
+        "solutionMd": "Step 1: Check the ratio of voltage (V) to frequency (f). For the initial state, V1/f1 = 250 / 50 = 5. For the final state, V2/f2 = 200 / 40 = 5. Since V/f is constant, the maximum flux density (Bm) in the core remains constant.\nStep 2: Determine the change in hysteresis loss (Ph). For a constant Bm, Ph is directly proportional to frequency (f). Therefore, Ph2 / Ph1 = f2 / f1 = 40 / 50 = 0.8. The percentage decrease is (1 - 0.8) * 100 = 20%.\nStep 3: Determine the change in eddy current loss (Pe). For a constant Bm, Pe is proportional to the square of the frequency (f^2). Therefore, Pe2 / Pe1 = (f2 / f1)^2 = (40 / 50)^2 = 0.8^2 = 0.64. The percentage decrease is (1 - 0.64) * 100 = 36%.",
+        "summary": "Calculate the percentage decrease in hysteresis and eddy current losses of a transformer when the supply voltage and frequency are changed from 250V, 50Hz to 200V, 40Hz.",
+        "final_answer": "Hysteresis loss decreases by 20% and eddy current loss decreases by 36%.",
+        "confidence": 100,
+        "confidence_reason": "The solution correctly identifies that the V/f ratio is constant, leading to the simplified proportionalities for magnetic losses.",
+        "diagramNeeded": false,
+        "diagramType": null,
+        "circuitSpec": null,
+        "graphSpec": null,
+        "hasDiagram": false,
+        "finish_reason": "parsed"
+      }
+    ]
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "59187a03748c61a6ab1fdb22745b0b829765e6bfd741b51c97f8aea44934d072"
+  }
+}

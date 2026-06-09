@@ -1,0 +1,1444 @@
+{
+  "nodes": [
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/rpc/questions_text_search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"p_embedding\": {{ JSON.stringify($json.embedding && $json.embedding.values ? $json.embedding.values : []) }},\n  \"p_max_distance\": 0.10,\n  \"p_limit\": 3\n}",
+        "options": {}
+      },
+      "id": "085bf98d-48e9-4034-ba8a-6550893b4256",
+      "name": "HTTP: Questions Text Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -352,
+        784
+      ],
+      "alwaysOutputData": true,
+      "notes": "NEW — searches questions table by vector similarity (cosine ≤ 0.20). Runs in parallel with RAG chunk search. Tighter threshold than RAG (0.30) to ensure high-confidence match only."
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Evaluate questions table text search result ─────────────────────────────\nconst allItems = $input.all();\nlet results;\nif (allItems.length === 1 && Array.isArray(allItems[0].json)) {\n  results = allItems[0].json;\n} else {\n  results = allItems.map(i => i.json).filter(r => r && typeof r === 'object' && !Array.isArray(r));\n}\n\nconst hit = results.length > 0 && results[0]?.solution_md ? results[0] : null;\n\n// Re-attach upstream context from Code: Prepare Text\nconst upstream = $('Code: Parse & Normalize1').first().json;\n\nreturn [{\n  json: {\n    ...upstream,\n    questionsHit:            !!hit,\n    // Prefer solution_md; fall back to explanation_md if solution_md absent\n    cachedSolutionMd:        hit?.solution_md      ?? hit?.explanation_md ?? null,\n    questionsConfidence:     hit?.confidence_score ?? null,\n    questionsSubject:        hit?.subject          ?? null,\n    questionsChapter:        hit?.chapter          ?? null,\n    questionsTopic:          hit?.topic            ?? null,\n    questionsAnswerText:     hit?.answer_text      ?? null,\n    questionsRowId:          hit?.id               ?? null,\n    questionsDistance:       hit?.distance         ?? null,\n  }\n}];"
+      },
+      "id": "a4806ad0-5046-4aad-9fad-14ec2221cae4",
+      "name": "Code: Evaluate Questions Text Hit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -128,
+        784
+      ],
+      "notes": "NEW — parses the questions_text_search RPC response. Sets questionsHit=true/false. cachedSolutionMd is set so the existing Code: Format Cached Answer node works unchanged."
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-qs-text-hit",
+              "leftValue": "={{ $json.questionsHit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "470dcfbd-7b29-4e39-a6c7-45b021869318",
+      "name": "IF: Questions DB Hit? (Text)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        96,
+        784
+      ],
+      "notes": "NEW — true → send questions table solution directly (zero Gemini tokens). false → continue to RAG chunk search as before."
+    },
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {}
+      },
+      "id": "2aa990b9-9099-41b6-95ea-d4339dcd2c16",
+      "name": "Telegram Trigger1",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        -3712,
+        1056
+      ],
+      "webhookId": "gate-bot-phase1-telegram",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const BOT_USERNAME = '@test_vertex_tele_bot';\n\nconst msg = $input.first().json.message;\nif (!msg) throw new Error('[Router] No message object in Telegram payload.');\n\nconst entities = [\n  ...(msg.entities         || []),\n  ...(msg.caption_entities || []),\n];\nconst fullText = msg.text || msg.caption || '';\n \n// Private chats respond without requiring the bot tag\nconst isPrivateChat = msg.chat?.type === 'private';\nconst isBotTagged = entities.some(e => {\n  if (e.type === 'mention') {\n    const mentioned = fullText.substring(e.offset, e.offset + e.length);\n    return mentioned.toLowerCase() === BOT_USERNAME.toLowerCase();\n  }\n  if (e.type === 'bot_command') return true;\n  return false;\n});\n\nconst hasPhoto    = Array.isArray(msg.photo) && msg.photo.length > 0;\nconst hasImageDoc = msg.document && typeof msg.document.mime_type === 'string' && msg.document.mime_type.startsWith('image/');\nconst hasText     = typeof msg.text    === 'string' && msg.text.trim().length    > 0;\nconst hasCaption  = typeof msg.caption === 'string' && msg.caption.trim().length > 0;\n\nlet messageType;\nif ((hasPhoto || hasImageDoc) && hasCaption) {\n  messageType = 'mixed';\n} else if (hasPhoto || hasImageDoc) {\n  messageType = 'image';\n} else {\n  messageType = 'text';\n}\n\nlet photoFileId = null;\nconst imageSource = hasPhoto ? 'photo' : hasImageDoc ? 'document' : null;\nif (hasPhoto)         photoFileId = msg.photo[msg.photo.length - 1].file_id;\nelse if (hasImageDoc) photoFileId = msg.document.file_id;\n\nconst questionText    = fullText.replace(/@\\w+/g, '').trim();\nconst threadMessageId = msg.reply_to_message?.message_id ?? msg.message_id;\n\nreturn [{\n  json: {\n    isBotTagged,\n    messageType,\n    chatId:          msg.chat.id,\n    messageId:       msg.message_id,\n    threadMessageId,\n    fromUserId:      msg.from?.id       ?? null,\n    fromUsername:    msg.from?.username ?? msg.from?.first_name ?? 'Unknown',\n    questionText,\n    imageSource,\n    photoFileId,\n    hasPhoto,\n    hasImageDoc,\n    hasText: hasText || hasCaption,\n    timestamp: new Date(msg.date * 1000).toISOString(),\n  },\n}];"
+      },
+      "id": "e6b35011-9c9c-40aa-bd1c-a1d73607f559",
+      "name": "Code: Parse & Normalize1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -3488,
+        1056
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-bot-tagged",
+              "leftValue": "={{ $json.isBotTagged }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ff7e6db1-f10c-4865-992b-e6c5b6cabb6b",
+      "name": "IF: Bot Tagged?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -3264,
+        1056
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "sw-mixed",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "mixed",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Mixed"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "sw-image",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Image"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 1
+                },
+                "conditions": [
+                  {
+                    "id": "sw-text",
+                    "leftValue": "={{ $json.messageType }}",
+                    "rightValue": "text",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Text"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a987a82f-579d-40e1-8665-4518574c0ed8",
+      "name": "Switch: Message Type1",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        -3040,
+        912
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Code: Parse & Normalize1').first().json.chatId }}",
+        "text": "🔍 Searching your study material…",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "7516fe43-6ca8-4990-ac4c-1dbc291263b0",
+      "name": "ACK: Text1",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -1472,
+        592
+      ],
+      "webhookId": "6afdbcec-a39d-4857-8926-917cf4d3e67e",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Code: Parse & Normalize1').first().json.chatId }}",
+        "text": "⚡ Looking for this question in my memory...",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "3628b428-efcf-463e-a28d-30f67f860452",
+      "name": "ACK: Image2",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2816,
+        1152
+      ],
+      "webhookId": "03688358-4dae-4610-b920-d7b86d433d12",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $('Code: Parse & Normalize1').first().json.chatId }}",
+        "text": "🔍 Analyzing your question and checking for existing solutions...",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "623f6905-dbc4-4d99-a929-b176f1001051",
+      "name": "ACK: Mixed1",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -2784,
+        784
+      ],
+      "webhookId": "4fcf2329-5206-41b1-a946-77026012997d",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Re-attach full upstream context after ACK node clears $json\nconst upstream = $('Code: Parse & Normalize1').first().json;\nreturn [{ json: { ...upstream } }];"
+      },
+      "id": "21443a1e-65eb-457b-82ec-3d5ef635d526",
+      "name": "Code: Prepare Text1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1248,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:embedContent",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "key",
+              "value": "=AIzaSyDE4P2RJ9Q8JqHR-Tly7VbyIa4uxwNi3gA"
+            }
+          ]
+        },
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"models/gemini-embedding-001\",\n  \"content\": {\n    \"parts\": [\n      {\n        \"text\": {{ JSON.stringify($json.processing_text || $json.ocrText || $json.questionText) }}\n      }\n    ]\n  },\n  \"taskType\": \"RETRIEVAL_QUERY\",\n  \"outputDimensionality\": 768\n}",
+        "options": {}
+      },
+      "id": "62679627-6eb6-488a-a854-1be1470c29bf",
+      "name": "HTTP: RAG Embed Query1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -576,
+        784
+      ],
+      "retryOnFail": true,
+      "waitBetweenTries": 2000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/rpc/knowledge_chunks_search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "=Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ {\n    \"p_embedding\": $json.embeddings.values,\n    \"p_max_distance\": 0.30,\n    \"p_limit\": 6\n} }}",
+        "options": {}
+      },
+      "id": "8a356a25-4fd6-45c8-b538-717adb5f0877",
+      "name": "HTTP: RAG Search Chunks1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        544,
+        928
+      ],
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// n8n may return Supabase array as one item (json = array) or multiple items\nconst allItems = $input.all();\nlet hits;\nif (allItems.length === 1 && Array.isArray(allItems[0].json)) {\n  hits = allItems[0].json;\n} else {\n  hits = allItems\n    .map(item => item.json)\n    .filter(h => h && typeof h === 'object' && !Array.isArray(h));\n}\n\nlet upstream = {};\ntry {\n  upstream = $('Code: Evaluate Questions Text Hit').first().json ?? {};\n} catch(e) { upstream = {}; }\n\nconst formatted = hits\n  .map((h, i) => {\n    const loc = [h.subject, h.chapter, h.topic].filter(Boolean).join(' › ');\n    const ref = `page ${h.page_number}${h.q_no ? ', Q' + h.q_no : ''}`;\n    return `[${i + 1}] ${loc} (${ref})\\n${(h.chunk_text || h.content || '').trim()}`;\n  })\n  .join('\\n\\n');\n\nlet parseNode = {};\ntry {\n  parseNode = $('Code: Parse & Normalize1').first().json ?? {};\n} catch(e) { parseNode = {}; }\n\nlet ocrNode = {};\ntry {\n  ocrNode = $('Code in JavaScript1').first().json ?? {};\n} catch(e) { ocrNode = {}; }\n\nlet questionText = '';\ntry {\n  questionText = $('Code: Normalize + SimHash (Text)').first().json?.ocrQuestion\n    || $('Telegram Trigger1').first().json?.message?.text\n    || '';\n} catch(e) {\n  try {\n    questionText = $('Telegram Trigger1').first().json?.message?.text || '';\n  } catch(e2) { questionText = ''; }\n}\n\nlet ocrtext = '';\ntry {\n  ocrtext = $('Code: Normalize + SimHash (Text)').first().json?.ocrText || '';\n} catch(e) { ocrtext = ''; }\n\nreturn [{\n  json: {\n    ...upstream,\n    questionText,\n    ragHits:     hits,\n    ragContext:  formatted,\n    ocrtext,\n    ragHitCount: hits.length,\n    topDistance: hits.length > 0 ? (hits[0].distance ?? null) : null,\n  }\n}];"
+      },
+      "id": "e827e052-af92-4b4a-8bdb-ed428c5cb0e5",
+      "name": "Code: RAG Attach Context1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "cond-rag-hit",
+              "leftValue": "={{ Boolean($json.ragHits && $json.ragHits.length > 0 && $json.ragHits[0].distance < 0.10) }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "1818ad56-f505-4e23-8feb-43b89e90b88c",
+      "name": "IF: Vector Hit?1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        992,
+        928
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/bot8751060343:AAHV38osqjWVw9BE23g4C6st0E1FjRiruDU/getFile",
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "file_id",
+              "value": "={{ $('Code: Parse & Normalize1').first().json.photoFileId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "3c067b99-ae47-4fc7-b5cf-f35ef58d3377",
+      "name": "HTTP: Get Telegram File Path1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2592,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "url": "=https://api.telegram.org/file/bot8751060343:AAHV38osqjWVw9BE23g4C6st0E1FjRiruDU/{{ $json.result.file_path }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "6690d27e-1f84-4e4a-9897-c9d3ed87a62e",
+      "name": "HTTP: Download Image Binary1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -2368,
+        1024
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst rawText = data.cachedSolutionMd || '';\n\n// ── Step 1: Unescape literal \\n from DB storage ───────────────────────────────\nlet safeText = rawText.replace(/\\\\n/g, '\\n');\n\n// ── Step 2: Normalise named HTML entities → plain text or safe equivalents ────\nsafeText = safeText\n  .replace(/&amp;/g, '\\x00AMP\\x00')\n  .replace(/&lt;/g,  '\\x00LT\\x00')\n  .replace(/&gt;/g,  '\\x00GT\\x00')\n  .replace(/&quot;/g, '\"')\n  .replace(/&le;/g,  '≤')\n  .replace(/&ge;/g,  '≥')\n  .replace(/&ne;/g,  '≠')\n  .replace(/&approx;/g, '≈')\n  .replace(/&times;/g,  '×')\n  .replace(/&divide;/g, '÷')\n  .replace(/&plusmn;/g, '±')\n  .replace(/&infin;/g,  '∞')\n  .replace(/&alpha;/g,  'α')\n  .replace(/&beta;/g,   'β')\n  .replace(/&gamma;/g,  'γ')\n  .replace(/&delta;/g,  'δ')\n  .replace(/&pi;/g,     'π')\n  .replace(/&omega;/g,  'ω')\n  .replace(/&theta;/g,  'θ')\n  .replace(/&phi;/g,    'φ')\n  .replace(/&lambda;/g, 'λ')\n  .replace(/&mu;/g,     'μ')\n  .replace(/&sigma;/g,  'σ')\n  .replace(/&Omega;/g,  'Ω')\n  .replace(/&rArr;/g,   '⇒')\n  .replace(/&rarr;/g,   '→')\n  .replace(/&larr;/g,   '←')\n  .replace(/&harr;/g,   '↔')\n  .replace(/&sub;/g,    '⊂')\n  .replace(/&sup;/g,    '⊃')\n  .replace(/&cup;/g,    '∪')\n  .replace(/&cap;/g,    '∩')\n  .replace(/&isin;/g,   '∈')\n  .replace(/&forall;/g, '∀')\n  .replace(/&exist;/g,  '∃')\n  .replace(/&sum;/g,    '∑')\n  .replace(/&int;/g,    '∫')\n  .replace(/&radic;/g,  '√')\n  .replace(/&deg;/g,    '°')\n  .replace(/&#(\\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))\n  .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))\n  .replace(/&[a-zA-Z][a-zA-Z0-9]*;/g, '');\n\n// ── Step 3: Protect content inside <code>/<pre> ───────────────────────────────\nsafeText = safeText.replace(/<(code|pre)>([\\s\\S]*?)<\\/\\1>/g, (match, tag, inner) => {\n  const restored = inner\n    .replace(/\\x00LT\\x00/g, '<')\n    .replace(/\\x00GT\\x00/g, '>')\n    .replace(/\\x00AMP\\x00/g, '&');\n  const safeInner = restored\n    .replace(/&/g, '&amp;')\n    .replace(/</g, '&lt;')\n    .replace(/>/g, '&gt;');\n  return `<${tag}>${safeInner}</${tag}>`;\n});\n\n// ── Step 4: Convert supported HTML → Telegram equivalents ────────────────────\nsafeText = safeText\n  .replace(/<br\\s*\\/?>/gi, '\\n')\n  .replace(/<strong>([\\s\\S]*?)<\\/strong>/gi, '<b>$1</b>')\n  .replace(/<em>([\\s\\S]*?)<\\/em>/gi, '<i>$1</i>')\n  .replace(/<h[1-6][^>]*>([\\s\\S]*?)<\\/h[1-6]>/gi, '<b>$1</b>\\n')\n  .replace(/<sub>([^<]*)<\\/sub>/gi, '[$1]')\n  .replace(/<sup>([^<]*)<\\/sup>/gi, '^$1');\n\n// ── Step 5: Strip unsupported tags (keep inner text) ─────────────────────────\nsafeText = safeText\n  .replace(/<\\/?(?:span|div|p|ul|ol|li|table|tr|td|th|hr|section|article|figure|img|svg|br)[^>]*>/gi, '')\n  .replace(/\\n{3,}/g, '\\n\\n')\n  .trim();\n\n// ── Step 6: Restore protected entities ───────────────────────────────────────\nsafeText = safeText\n  .replace(/\\x00LT\\x00/g, '&lt;')\n  .replace(/\\x00GT\\x00/g, '&gt;')\n  .replace(/\\x00AMP\\x00/g, '&amp;');\n\n// ── Step 7: Escape bare < > that are NOT valid Telegram tags ─────────────────\n// Placeholder approach: protect valid tags, escape everything else, restore.\nconst TELEGRAM_TAG_RE = /<\\/?(?:b|i|u|s|code|pre)>|<a(?:\\s[^>]*)?>|<\\/a>/g;\nconst tagBank = [];\nsafeText = safeText.replace(TELEGRAM_TAG_RE, (match) => {\n  tagBank.push(match);\n  return `\\x01TAG${tagBank.length - 1}\\x01`;\n});\nsafeText = safeText.replace(/</g, '&lt;').replace(/>/g, '&gt;');\nfor (let i = 0; i < tagBank.length; i++) {\n  safeText = safeText.replace(`\\x01TAG${i}\\x01`, tagBank[i]);\n}\n\n// ── Step 8: Tag-aware chunker (never splits inside an open HTML tag) ──────────\nconst CHUNK_SIZE = 3800;\nconst TRACKED_TAGS = ['b', 'i', 'u', 's', 'code', 'pre'];\n\nfunction getOpenTags(text) {\n  const stack = [];\n  const tagRe = /<\\/?([a-zA-Z]+)[^>]*>/g;\n  let m;\n  while ((m = tagRe.exec(text)) !== null) {\n    const tag = m[1].toLowerCase();\n    if (!TRACKED_TAGS.includes(tag)) continue;\n    if (m[0].startsWith('</')) {\n      const idx = stack.lastIndexOf(tag);\n      if (idx !== -1) stack.splice(idx, 1);\n    } else {\n      stack.push(tag);\n    }\n  }\n  return stack;\n}\n\nfunction closeTags(openTags) {\n  return [...openTags].reverse().map(t => `</${t}>`).join('');\n}\n\nfunction reopenTags(openTags) {\n  return openTags.map(t => `<${t}>`).join('');\n}\n\nconst chunks = [];\nlet remaining = safeText;\n\nwhile (remaining.length > 0) {\n  if (remaining.length <= CHUNK_SIZE) {\n    chunks.push({ json: { ...data, chunk: remaining.trim() } });\n    break;\n  }\n\n  // Walk back from limit to find a safe whitespace split point\n  let end = CHUNK_SIZE;\n  while (end > 0 && remaining[end] !== '\\n' && remaining[end] !== ' ') end--;\n  if (end === 0) end = CHUNK_SIZE; // no whitespace found, force cut\n\n  let slice = remaining.slice(0, end);\n  const openTags = getOpenTags(slice);\n\n  if (openTags.length > 0) {\n    // Close open tags at end of this chunk, reopen at start of next\n    slice = slice + closeTags(openTags);\n    remaining = reopenTags(openTags) + remaining.slice(end);\n  } else {\n    remaining = remaining.slice(end);\n  }\n\n  chunks.push({ json: { ...data, chunk: slice.trim() } });\n}\n\nreturn chunks;"
+      },
+      "id": "91ad5d05-b196-433c-bcb1-fd78e06eca81",
+      "name": "Code: Format Cached Answer1",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        688
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatid }}",
+        "text": "={{ $json.chunk }}",
+        "additionalFields": {
+          "appendAttribution": false,
+          "parse_mode": "HTML",
+          "reply_to_message_id": "={{ $json.msgid }}"
+        }
+      },
+      "id": "ad5216ff-c8fb-498c-a407-0b1540061c76",
+      "name": "Telegram: Send Cached Answer1",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        720,
+        208
+      ],
+      "webhookId": "94bf7371-cf0c-4e38-8557-4c54052365ed",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "YCHqEEUrPEWI3vyT",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/YCHqEEUrPEWI3vyT",
+          "cachedResultName": "Phase_2_RAG_Solver"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1216,
+        912
+      ],
+      "id": "782ddd04-478d-420a-903c-477cdf480d44",
+      "name": "Call 'Phase_2_RAG_Solver'1"
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chatId }}",
+        "text": "=Hi {{ $json.fromUsername }}👋\n\nI'm here to help, but I only respond when I'm specifically tagged.\nPlease tag me (@test\\_vertex\\_tele\\_bot) in your message so I can assist you.",
+        "additionalFields": {
+          "appendAttribution": false
+        }
+      },
+      "id": "4554a758-0995-4fbc-91b7-0e0e7544b09f",
+      "name": "ACK: Image3",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        -3040,
+        1136
+      ],
+      "webhookId": "03688358-4dae-4610-b920-d7b86d433d12",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-flash",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-flash"
+        },
+        "text": "You are a specialized OCR engine for academic and engineering exam questions.\n\nExtract ALL text from the image with maximum accuracy.\n\nMATHEMATICAL NOTATION:\n- Render subscripts as: V_1, R_2, Z_ab\n- Render superscripts as: x^2, e^jωt\n- Angles: write as ∠ symbol followed by value, e.g. 16∠0°\n- Complex impedances: write exactly as shown, e.g. j30Ω, -j50Ω\n- Greek letters: use actual symbols — Ω, ω, π, θ, φ, α, β, δ, Δ\n- Fractions: write as numerator/denominator\n\nCIRCUIT DIAGRAMS:\n- Do NOT describe the circuit drawing or produce ASCII art\n- ONLY extract visible text labels:\n  component values (e.g. 25Ω, j30Ω, -j50Ω)\n  source values (e.g. 16∠0°V, 5∠0°A)\n  node labels (e.g. P, Q, R, S)\n  question text\n  answer options\n\nOUTPUT RULES:\n- Return ONLY a valid JSON object\n- No markdown, no code fences, no explanation outside the JSON\n- Follow this exact structure:\n\n{\n  \"question\": \"full question text extracted exactly as written\",\n  \"diagram_labels\": [\"label1\", \"label2\"],\n  \"question_type\": \"single_choice or multiple_choice or numerical or descriptive\",\n  \"options\": [\"option text 1\", \"option text 2\", \"option text 3\", \"option text 4\"]\n}\n\nFIELD RULES:\n- question: the full question sentence only, no labels, no options\n- diagram_labels: all component values and node labels visible in the diagram (empty array [] if none)\n- question_type: infer from the image; use \"single_choice\" if options are present and one answer expected\n- options: array of option strings exactly as written; empty array [] if no options visible\n- If a field has no content, use empty string \"\" or empty array [] — never omit the field",
+        "inputType": "binary",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1.2,
+      "position": [
+        -1920,
+        1024
+      ],
+      "id": "56ac6ce4-c54a-484f-b911-45194012bff9",
+      "name": "Analyze an image",
+      "retryOnFail": true,
+      "waitBetweenTries": 3000,
+      "credentials": {
+        "googlePalmApi": {
+          "id": "ksKzGDifexAhBrwT",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Force correct MIME type for Gemini\nconst item = $input.first();\n\nif (item.binary?.data) {\n  item.binary.data.mimeType = 'image/jpeg';\n}\n\nreturn [item];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -2144,
+        1024
+      ],
+      "id": "fa187c87-7473-498b-a708-34458ec8e26b",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── 1. Extract raw text from Gemini ──────────────────────────────────────────\nconst geminiRaw = $input.first().json;\n\nlet rawText = '';\nif (typeof geminiRaw.text === 'string' && geminiRaw.text.trim()) {\n  rawText = geminiRaw.text.trim();\n} else if (geminiRaw?.content?.parts?.[0]?.text) {\n  rawText = geminiRaw.content.parts[0].text.trim();\n} else if (geminiRaw?.candidates?.[0]?.content?.parts?.[0]?.text) {\n  rawText = geminiRaw.candidates[0].content.parts[0].text.trim();\n} else if (geminiRaw?.response?.text) {\n  rawText = geminiRaw.response.text.trim();\n}\n\nif (!rawText) {\n  throw new Error(\n    `OCR empty. Keys: ${JSON.stringify(Object.keys(geminiRaw))} | Raw: ${JSON.stringify(geminiRaw).slice(0, 300)}`\n  );\n}\n\n// ── 2. Parse JSON from Gemini response ───────────────────────────────────────\nconst cleaned = rawText\n  .replace(/^```json\\s*/i, '')\n  .replace(/^```\\s*/i, '')\n  .replace(/```\\s*$/i, '')\n  .trim();\n\nlet parsed = {};\ntry {\n  parsed = JSON.parse(cleaned);\n} catch (e) {\n  // Fallback: treat entire text as the question\n  parsed = {\n    question: rawText,\n    diagram_labels: [],\n    question_type: 'unknown',\n    options: []\n  };\n}\n\n// ── 3. Normalise fields ───────────────────────────────────────────────────────\nconst question       = (parsed.question       || '').trim();\nconst diagramLabels  = Array.isArray(parsed.diagram_labels) ? parsed.diagram_labels : [];\nconst questionType   = (parsed.question_type  || 'unknown').trim();\nconst options        = Array.isArray(parsed.options) ? parsed.options : [];\n\n// ── 4. Build combined text for SimHash (question + diagram labels only) ───────\n// Deliberately excludes options so Image1 (with options) and\n// Image2 (without options) produce the same SimHash\nfunction cleanForSimHash(text) {\n  return text\n    .toLowerCase()\n    .replace(/[^\\w\\s∠°Ωωπθφαβδ]/g, ' ')\n    .replace(/\\s{2,}/g, ' ')\n    .trim();\n}\n\nconst simHashInput = cleanForSimHash(\n  question + ' ' + diagramLabels.join(' ')\n);\n\n// ── 5. Pull Telegram context ──────────────────────────────────────────────────\nconst telegram = $('Code: Parse & Normalize1').first().json;\n\nreturn [{\n  json: {\n    telegram,\n    // Structured OCR output\n    ocrQuestion:    question,\n    ocrOptions:     options,\n    ocrDiagramLabels: diagramLabels,\n    ocrQuestionType:  questionType,\n    // Flat text for downstream compatibility\n    ocrText:        simHashInput,        // used for SimHash (no options)\n    ocrRaw:         rawText,             // original Gemini output\n    ocrFull:        question + (options.length ? '\\n' + options.join('\\n') : ''),\n    source:         'telegram_image_ocr',\n    extractedAt:    new Date().toISOString(),\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1696,
+        1024
+      ],
+      "id": "0e5025bf-bef2-423b-be4c-ef093d7670c5",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "f94af4ff-1294-4b7c-9487-824b0074606d",
+              "leftValue": "={{ $json.hasPhoto }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -1024,
+        592
+      ],
+      "id": "e52409ef-c93a-490c-ade4-4232c463f378",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "jsCode": "const upstream = $input.first().json;\n\n// Use ocrText for photo messages, questionText for text messages\nconst processing_text = upstream.hasPhoto \n  ? (upstream.ocrText || upstream.questionText || \"\")\n  : (upstream.questionText || \"\");\n\nreturn [{ json: { ...upstream, processing_text } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -800,
+        592
+      ],
+      "id": "0d492665-cd95-4c86-ad36-d1ae66abc025",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Loop over input items and add a new field called 'myNewField' to the JSON of each one\n\nconst embeddings=$('HTTP: RAG Embed Query1').first().json.embedding\n\nreturn {'embeddings':embeddings}"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        320,
+        928
+      ],
+      "id": "5054de5b-e4f5-4228-be59-a4c677b425d3",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "aEgumUJETVCS5MaD",
+          "mode": "list",
+          "cachedResultUrl": "/workflow/aEgumUJETVCS5MaD",
+          "cachedResultName": "Phase_2_Supabase"
+        },
+        "workflowInputs": {
+          "mappingMode": "defineBelow",
+          "value": {},
+          "matchingColumns": [],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": true
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1216,
+        1104
+      ],
+      "id": "fa6d63ef-c7d8-4f26-aa89-ef1e3bcf24cc",
+      "name": "Call 'Phase_2_Supabase"
+    },
+    {
+      "parameters": {
+        "jsCode": "function simHash(text, bits = 64) {\n  const tokens = text\n    .toLowerCase()\n    .replace(/[^\\w\\s]/g, '')\n    .split(/\\s+/)\n    .filter(Boolean);\n\n  if (tokens.length === 0) return '0'.repeat(bits);\n\n  const vector = new Array(bits).fill(0);\n\n  for (const token of tokens) {\n    let h = 5381;\n    for (let i = 0; i < token.length; i++) {\n      h = ((h << 5) + h) ^ token.charCodeAt(i);\n      h = h >>> 0;\n    }\n    for (let b = 0; b < bits; b++) {\n      vector[b] += (h >> (b % 32)) & 1 ? 1 : -1;\n    }\n  }\n\n  return vector.map(v => (v >= 0 ? '1' : '0')).join('');\n}\n\nconst raw = $input.first().json.ocrQuestion;\nconst normalized = raw.toLowerCase().replace(/[^\\w\\s]/g, '').replace(/\\s+/g, ' ').trim();\nconst simhash_binary = simHash(normalized);\n\nreturn [{\n  json: {\n    ...$json,\n    normalized_text: normalized,\n    simhash_binary: simhash_binary,\n    source_type: 'text',\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1472,
+        1024
+      ],
+      "id": "c97a2289-e3ad-4c83-9074-e785b7cbf8fa",
+      "name": "Code: Normalize + SimHash (Text)"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/rpc/simhash_lookup",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"p_simhash_binary\": \"{{ $json.simhash_binary }}\",\n  \"p_threshold\": 2\n}",
+        "options": {}
+      },
+      "id": "88125b38-3828-4755-ad1e-cefa9cd2b731",
+      "name": "HTTP: SimHash Lookup (Text)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -1248,
+        1024
+      ],
+      "alwaysOutputData": true,
+      "notes": "NEW — searches questions table by vector similarity (cosine ≤ 0.20). Runs in parallel with RAG chunk search. Tighter threshold than RAG (0.30) to ensure high-confidence match only."
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = Array.isArray($json) ? $json : [$json];\nconst hit = results.length > 0 && results[0]?.solution_md ? results[0] : null;\n\nconst upstream = $('Code: Normalize + SimHash (Text)').first().json;\n\nreturn [{\n  json: {\n    ...upstream,\n    simCacheHit:      !!hit,\n    cachedSolutionMd: hit?.solution_md    ?? null,\n    cachedConfidence: hit?.confidence     ?? null,\n    cachedSubject:    hit?.subject        ?? null,\n    cachedChapter:    hit?.chapter        ?? null,\n    cachedTopic:      hit?.topic          ?? null,\n    diagramUrl:       hit?.diagram_url    ?? null,\n    hammingDistance:  hit?.hamming_distance ?? null,\n    cacheRowId:       hit?.id             ?? null,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1024,
+        1024
+      ],
+      "id": "24f7c5d9-cbb9-4ca5-a3de-72e0dc3e9a79",
+      "name": "Code: Evaluate SimHash Hit (Text)"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "abd345d2-b763-4e71-b03b-852f078175f4",
+              "leftValue": "={{ $json.simCacheHit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        -800,
+        1024
+      ],
+      "id": "2fb27e21-af4b-434b-913d-7670ab5bd1c1",
+      "name": "IF: SimHash Cache Hit? (Text)"
+    },
+    {
+      "parameters": {
+        "url": "={{ $('Code in JavaScript9').item.json.diagramUrl }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        768,
+        688
+      ],
+      "id": "8a453dad-c371-4021-bd17-0679bf2483bd",
+      "name": "HTTP Request49"
+    },
+    {
+      "parameters": {
+        "operation": "sendPhoto",
+        "chatId": "={{ $json.result.chat.id }}",
+        "binaryData": true,
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        992,
+        688
+      ],
+      "id": "8305d34d-eb1d-4b31-9de6-5f3831140041",
+      "name": "Send a photo message3",
+      "webhookId": "58b33ae2-704b-4844-a8e8-79babc5a342a",
+      "credentials": {
+        "telegramApi": {
+          "id": "33dQlS9GxVDCrvSi",
+          "name": "Telegram account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const results = Array.isArray($json) ? $json : [$json];\nconst hit = results.length > 0 && results[0]?.solution_md ? results[0] : null;\n\nconst upstream = $('Code in JavaScript8').first().json;\n\nreturn [{\n  json: {\n    ...upstream,\n    simCacheHit:      !!hit,\n    cachedSolutionMd: hit?.solution_md    ?? null,\n    cachedConfidence: hit?.confidence     ?? null,\n    cachedSubject:    hit?.subject        ?? null,\n    cachedChapter:    hit?.chapter        ?? null,\n    cachedTopic:      hit?.topic          ?? null,\n    diagramUrl:       hit?.diagram_url    ?? null,\n    hammingDistance:  hit?.hamming_distance ?? null,\n    cacheRowId:       hit?.id             ?? null,\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -112,
+        528
+      ],
+      "id": "ead10945-adc8-4d2a-bf78-3869bb7dd28a",
+      "name": "Code: Evaluate SimHash Hit (Text)1"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "abd345d2-b763-4e71-b03b-852f078175f4",
+              "leftValue": "={{ $json.simCacheHit }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        96,
+        384
+      ],
+      "id": "c4aa2e71-3148-4764-ae3d-06dc2f22df78",
+      "name": "IF: SimHash Cache Hit? (Text)1"
+    },
+    {
+      "parameters": {
+        "jsCode": "function simHash(text, bits = 64) {\n  const tokens = text\n    .toLowerCase()\n    .replace(/[^\\w\\s]/g, '')\n    .split(/\\s+/)\n    .filter(Boolean);\n\n  if (tokens.length === 0) return '0'.repeat(bits);\n\n  const vector = new Array(bits).fill(0);\n\n  for (const token of tokens) {\n    let h = 5381;\n    for (let i = 0; i < token.length; i++) {\n      h = ((h << 5) + h) ^ token.charCodeAt(i);\n      h = h >>> 0;\n    }\n    for (let b = 0; b < bits; b++) {\n      vector[b] += (h >> (b % 32)) & 1 ? 1 : -1;\n    }\n  }\n\n  return vector.map(v => (v >= 0 ? '1' : '0')).join('');\n}\n\nconst raw = $input.first().json.questionText\nconst normalized = raw.toLowerCase().replace(/[^\\w\\s]/g, '').replace(/\\s+/g, ' ').trim();\nconst simhash_binary = simHash(normalized);\n\nreturn [{\n  json: {\n    ...$json,\n    normalized_text: normalized,\n    simhash_binary: simhash_binary,\n    source_type: 'text',\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -544,
+        400
+      ],
+      "id": "2c29a229-a401-4f31-a8c2-2e31ece30b77",
+      "name": "Code in JavaScript8"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://fuamnucdmfirddocfaig.supabase.co/rest/v1/rpc/simhash_lookup",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "apikey",
+              "value": "=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Authorization",
+              "value": "=Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ.iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"p_simhash_binary\": \"{{ $json.simhash_binary }}\",\n  \"p_threshold\": 2\n}",
+        "options": {}
+      },
+      "id": "67059a99-a101-4a96-8287-b9a1081f7724",
+      "name": "HTTP: SimHash Lookup (Text)3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        -336,
+        352
+      ],
+      "alwaysOutputData": true,
+      "notes": "NEW — searches questions table by vector similarity (cosine ≤ 0.20). Runs in parallel with RAG chunk search. Tighter threshold than RAG (0.30) to ensure high-confidence match only."
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\n\nlet msgid = null;\ntry {\n  msgid = input.telegram?.messageId || input.messageId || $('Telegram Trigger').first().json?.message?.message_id || null;\n} catch(e) {\n  msgid = input.telegram?.messageId || input.messageId || null;\n}\n\nlet chatid = null;\ntry {\n  chatid = input.telegram?.chatId || input.chatId || $('Telegram Trigger').first().json?.message?.chat?.id || null;\n} catch(e) {\n  chatid = input.telegram?.chatId || input.chatId || null;\n}\n\nlet diagramurl = null;\ntry {\n  diagramurl = $('Code: Evaluate SimHash Hit (Text)1').first().json?.diagramUrl || input.diagramUrl || null;\n} catch(e) {\n  diagramurl = input.diagramUrl || null;\n}\n\nreturn [{\n  json: {\n    ...input,\n    msgid,\n    chatid,\n    diagramurl\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        528,
+        688
+      ],
+      "id": "fb71b14e-2645-4fb4-9827-1b66223bc05d",
+      "name": "Code in JavaScript9"
+    }
+  ],
+  "connections": {
+    "HTTP: Questions Text Search": {
+      "main": [
+        [
+          {
+            "node": "Code: Evaluate Questions Text Hit",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Evaluate Questions Text Hit": {
+      "main": [
+        [
+          {
+            "node": "IF: Questions DB Hit? (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Questions DB Hit? (Text)": {
+      "main": [
+        [
+          {
+            "node": "Code: Format Cached Answer1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram Trigger1": {
+      "main": [
+        [
+          {
+            "node": "Code: Parse & Normalize1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Parse & Normalize1": {
+      "main": [
+        [
+          {
+            "node": "IF: Bot Tagged?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Bot Tagged?1": {
+      "main": [
+        [
+          {
+            "node": "Switch: Message Type1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ACK: Image3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch: Message Type1": {
+      "main": [
+        [
+          {
+            "node": "ACK: Mixed1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ACK: Image2",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "ACK: Text1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ACK: Text1": {
+      "main": [
+        [
+          {
+            "node": "Code: Prepare Text1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ACK: Image2": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Get Telegram File Path1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ACK: Mixed1": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Get Telegram File Path1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Prepare Text1": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: RAG Embed Query1": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Questions Text Search",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: RAG Search Chunks1": {
+      "main": [
+        [
+          {
+            "node": "Code: RAG Attach Context1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: RAG Attach Context1": {
+      "main": [
+        [
+          {
+            "node": "IF: Vector Hit?1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: Vector Hit?1": {
+      "main": [
+        [
+          {
+            "node": "Call 'Phase_2_RAG_Solver'1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Call 'Phase_2_Supabase",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Get Telegram File Path1": {
+      "main": [
+        [
+          {
+            "node": "HTTP: Download Image Binary1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: Download Image Binary1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Format Cached Answer1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript9",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Telegram: Send Cached Answer1": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request49",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze an image": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Analyze an image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Code: Normalize + SimHash (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript8",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "HTTP: RAG Search Chunks1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Normalize + SimHash (Text)": {
+      "main": [
+        [
+          {
+            "node": "HTTP: SimHash Lookup (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: SimHash Lookup (Text)": {
+      "main": [
+        [
+          {
+            "node": "Code: Evaluate SimHash Hit (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Evaluate SimHash Hit (Text)": {
+      "main": [
+        [
+          {
+            "node": "IF: SimHash Cache Hit? (Text)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: SimHash Cache Hit? (Text)": {
+      "main": [
+        [
+          {
+            "node": "Code: Format Cached Answer1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP: RAG Embed Query1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request49": {
+      "main": [
+        [
+          {
+            "node": "Send a photo message3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code: Evaluate SimHash Hit (Text)1": {
+      "main": [
+        [
+          {
+            "node": "IF: SimHash Cache Hit? (Text)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF: SimHash Cache Hit? (Text)1": {
+      "main": [
+        [
+          {
+            "node": "Code: Format Cached Answer1",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "HTTP: RAG Embed Query1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript8": {
+      "main": [
+        [
+          {
+            "node": "HTTP: SimHash Lookup (Text)3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP: SimHash Lookup (Text)3": {
+      "main": [
+        [
+          {
+            "node": "Code: Evaluate SimHash Hit (Text)1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript9": {
+      "main": [
+        [
+          {
+            "node": "Telegram: Send Cached Answer1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {
+    "Telegram Trigger1": [
+      {
+        "update_id": 546503614,
+        "message": {
+          "message_id": 1562,
+          "from": {
+            "id": 2051492039,
+            "is_bot": false,
+            "first_name": "RAJ",
+            "last_name": "FACHARA",
+            "language_code": "en"
+          },
+          "chat": {
+            "id": 2051492039,
+            "first_name": "RAJ",
+            "last_name": "FACHARA",
+            "type": "private"
+          },
+          "date": 1780940316,
+          "text": "@test_vertex_tele_bot",
+          "entities": [
+            {
+              "offset": 0,
+              "length": 21,
+              "type": "mention"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "59187a03748c61a6ab1fdb22745b0b829765e6bfd741b51c97f8aea44934d072"
+  }
+}

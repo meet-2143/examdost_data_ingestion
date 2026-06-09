@@ -1,0 +1,6 @@
+# Local ingestion deps (no n8n). Python 3.11.
+PyMuPDF>=1.24        # PDF parsing / page render (fitz) — used by ../ingest/ingest_pdf.py
+Pillow>=10           # figure image decode for pHash (only needed with --with-figures)
+numpy>=1.26          # pHash DCT
+scipy>=1.11          # pHash DCT
+# Embeddings + Supabase writes use the stdlib (urllib) — no extra HTTP client needed.
