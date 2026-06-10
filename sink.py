@@ -32,15 +32,10 @@ from io import BytesIO
 from typing import Optional
 
 # ── Config (env-driven, same secrets that live in the workflow JSONs) ──────────
-SUPABASE_URL   = os.environ.get("SUPABASE_URL",  "https://fuamnucdmfirddocfaig.supabase.co").rstrip("/")
-SUPABASE_KEY = os.getenv("SUPABASE_APIKEY", (
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1YW1udWNkbWZpcmRkb2NmYWlnIiwicm9sZSI6"
-    "InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Nzk5MzU5NSwiZXhwIjoyMDkzNTY5NTk1fQ"
-    ".iPXOwyFyE7NjXTooMgDekrAgcs-33FEDCHMw5yGl6Ng"
-))
+SUPABASE_URL   = os.environ.get("SUPABASE_URL",  "").rstrip("/")
+SUPABASE_KEY = os.getenv("SUPABASE_APIKEY", ())
 
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AIzaSyDE4P2RJ9Q8JqHR-Tly7VbyIa4uxwNi3gA")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 
 EMBED_MODEL    = "models/gemini-embedding-001"   # identical to phase_1
 EMBED_DIM      = 768                              # identical to phase_1
